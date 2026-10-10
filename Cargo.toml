@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+    "beazt-domain",
+    "beazt-zaino-client",
+    "beazt-web",
+    "beazt-tui",
+]
+
+[workspace.package]
+authors = ["Zingo Lab Cyan"]
+repository = "https://github.com/nachog00/beazt"
+homepage = "https://github.com/nachog00/beazt"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# zaino itself isn't published to crates.io; pinned to the commit this repo
+# was extracted from. Re-pin (or switch to `branch = "dev"`) once the
+# upstream serde(default) fixes and node-rpc additions this project found
+# land there.
+zaino-noderpc = { git = "https://github.com/zingolabs/zaino.git", rev = "b58588fba8395b5143087ef15a865b0b491bbd09" }
+zaino-service = { git = "https://github.com/zingolabs/zaino.git", rev = "b58588fba8395b5143087ef15a865b0b491bbd09" }
+zaino-primitives = { git = "https://github.com/zingolabs/zaino.git", rev = "b58588fba8395b5143087ef15a865b0b491bbd09" }
+
+thiserror = "2.0"
+tokio = { version = "1.38", features = ["full"] }
+jsonrpsee = { version = "0.24", features = ["macros"] }
+axum = "0.7"
+maud = { version = "0.26", features = ["axum"] }
+ratatui = "0.29"
+crossterm = "0.28"
+tower = { version = "0.4", features = ["buffer", "util"] }
+zcash_protocol = "0.10"
+
+# zaino's own crates (above) depend on this same Zebra fork rather than the
+# public crates.io release - this patch is load-bearing, not optional, and
+# must track whatever zaino's own Cargo.toml pins at the same commit.
+[patch.crates-io]
+zebra-chain = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
+zebra-rpc = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }
+zebra-state = { git = "https://github.com/nachog00/zebra.git", branch = "feat/compact-block-read-v6.3.0" }

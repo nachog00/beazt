@@ -11,8 +11,8 @@ use axum::extract::{Path, State};
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
+use beazt_domain::ChainReader;
 use maud::html;
-use zaino_explorer_domain::ChainReader;
 
 /// The explorer's web router: every route is a live read through `reader`,
 /// never a cached or locally re-derived value — that's the whole point of a
@@ -41,7 +41,7 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
     let status = reader.node_status().await;
 
     let body = html! {
-        h1 { "zaino-block-explorer" }
+        h1 { "beazt" }
         @match height {
             Ok(height) => p { "Chain height: " (height) },
             Err(e) => p { "RPC error: " (e.to_string()) },
@@ -480,11 +480,11 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
 
 #[cfg(test)]
 mod tests {
+    use beazt_zaino_client::ZainoClient;
     use http_body_util::BodyExt;
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
     use tower::ServiceExt;
-    use zaino_explorer_zaino_client::ZainoClient;
     use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
     use zaino_service::testing::{MockChain, MockIndexerService};
     use zcash_protocol::consensus::Network;
@@ -574,7 +574,7 @@ mod tests {
     /// `/block/{id}` for an unscripted height renders a graceful RPC error,
     /// not a panic or a 500 — the route is reachable and its error path is
     /// wired. The happy-path mapping (`BlockDetail` field-for-field,
-    /// including txids) is covered in `zaino-explorer-zaino-client`'s own
+    /// including txids) is covered in `beazt-zaino-client`'s own
     /// pure-function and mock-server tests; this test is about the route.
     #[tokio::test(flavor = "multi_thread")]
     async fn block_route_renders_rpc_error_for_an_unscripted_height() {
@@ -614,7 +614,7 @@ mod tests {
     /// movements — a negative input and a positive output, each with its
     /// address — alongside the transaction list. The differentiator
     /// capability (`getblockdeltas`) rendering end to end, not just the
-    /// pure-function mapping `zaino-explorer-zaino-client` already covers.
+    /// pure-function mapping `beazt-zaino-client` already covers.
     #[tokio::test(flavor = "multi_thread")]
     async fn block_route_renders_value_movements() {
         use zaino_primitives::types::{
@@ -736,7 +736,7 @@ mod tests {
     /// `/block/{id}/treestate` for an unscripted block renders a graceful
     /// RPC error, not a panic — the route is reachable and its error path
     /// is wired. The happy-path mapping is covered in
-    /// `zaino-explorer-zaino-client`'s own tests; `truncate_hex` is covered
+    /// `beazt-zaino-client`'s own tests; `truncate_hex` is covered
     /// directly below.
     #[tokio::test(flavor = "multi_thread")]
     async fn treestate_route_renders_rpc_error_for_an_unscripted_block() {
@@ -786,7 +786,7 @@ mod tests {
     /// `/mempool` for an empty mock mempool renders zero transactions, not
     /// an error — an empty mempool is routine, not a failure. Proves the
     /// route is reachable; the field-mapping itself is covered by
-    /// `zaino-explorer-zaino-client`'s own tests.
+    /// `beazt-zaino-client`'s own tests.
     #[tokio::test(flavor = "multi_thread")]
     async fn mempool_route_renders_zero_transactions_for_an_empty_mempool() {
         let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
@@ -824,7 +824,7 @@ mod tests {
     /// `/node` renders a graceful RPC error when `getmininginfo` isn't
     /// scripted (the mock always answers `NotReady` for it, mirroring
     /// `node_status`'s own dependency) — not a panic. The happy-path
-    /// mapping is covered in `zaino-explorer-zaino-client`'s own
+    /// mapping is covered in `beazt-zaino-client`'s own
     /// pure-function test; this test is about the route.
     #[tokio::test(flavor = "multi_thread")]
     async fn node_route_renders_unavailable_sections_when_not_ready() {
@@ -946,7 +946,7 @@ mod tests {
     /// (zcashd's own "not found" for an unknown transaction), not a panic
     /// or a 500 — the route is reachable and its error path is wired. The
     /// happy-path mapping (`TransactionDetail` field-for-field) is covered
-    /// in `zaino-explorer-zaino-client`'s own pure-function tests, which
+    /// in `beazt-zaino-client`'s own pure-function tests, which
     /// don't need a server; this test is about the route, not the mapping.
     #[tokio::test(flavor = "multi_thread")]
     async fn transaction_route_renders_rpc_error_for_an_unknown_txid() {
@@ -987,7 +987,7 @@ mod tests {
     /// as zero, distinct from an actual RPC failure. Proves the route is
     /// reachable and composes both underlying calls (balance + txids)
     /// without crashing; the field-mapping itself is covered by
-    /// `zaino-explorer-zaino-client`'s own test against a scripted balance.
+    /// `beazt-zaino-client`'s own test against a scripted balance.
     #[tokio::test(flavor = "multi_thread")]
     async fn address_route_renders_zero_balance_for_an_unknown_address() {
         let (addr, handle) = spawn_mock_server(tip_only_chain()).await;

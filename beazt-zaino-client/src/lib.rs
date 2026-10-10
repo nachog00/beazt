@@ -4,14 +4,14 @@
 //! generated client already gives for free.
 #![forbid(unsafe_code)]
 
-use jsonrpsee::http_client::HttpClient;
-use zaino_explorer_domain::{
+use beazt_domain::{
     AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
     BlockSummary, BlockchainInfo, ChainReadError, ChainReader, MempoolEntry, MiningInfo,
     NetworkInfo, NodeDiagnostics, NodeStatus, OutputStatus, PeerInfo, PoolTreestate, SpendInfo,
     SubtreeRoot, SubtreeRoots, TransactionDelta, TransactionDetail, TransactionOutput, Treestate,
     UnifiedReceivers, ValueMovement,
 };
+use jsonrpsee::http_client::HttpClient;
 use zaino_noderpc::wire::params::{
     AddressDeltasParam, AddressTxidsParam, AddressesParam, GetSpentInfoParam,
 };
@@ -573,9 +573,9 @@ mod tests {
         raw_mempool_from_response, transaction_detail_from_response, treestate_from_response,
         ZainoClient,
     };
+    use beazt_domain::ChainReader;
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
-    use zaino_explorer_domain::ChainReader;
     use zaino_noderpc::wire::response::{
         BlockResponse, GetBlockResponse, GetRawTransactionResponse, OrchardObject,
         RawTransactionResponse, ScriptPubKey, TransactionObject, TransactionOutput,
@@ -605,7 +605,7 @@ mod tests {
     }
 
     /// A `getblock` verbosity-1 response maps field-for-field into a
-    /// [`zaino_explorer_domain::BlockSummary`] — no server needed, this is
+    /// [`beazt_domain::BlockSummary`] — no server needed, this is
     /// pure mapping logic.
     #[test]
     fn verbose1_response_maps_to_block_summary() {
@@ -658,7 +658,7 @@ mod tests {
     }
 
     /// A `getblock` verbosity-1 response maps field-for-field into a
-    /// [`zaino_explorer_domain::BlockDetail`], including every txid — the
+    /// [`beazt_domain::BlockDetail`], including every txid — the
     /// field a block list's `BlockSummary` doesn't carry.
     #[test]
     fn verbose1_response_maps_to_block_detail_with_txids() {
@@ -700,7 +700,7 @@ mod tests {
     }
 
     /// A `getblockdeltas` response maps field-for-field into a
-    /// [`zaino_explorer_domain::BlockDeltas`] — a negative input value, a
+    /// [`beazt_domain::BlockDeltas`] — a negative input value, a
     /// positive output value, and each movement's optional address, with no
     /// server needed.
     #[test]
@@ -756,7 +756,7 @@ mod tests {
     }
 
     /// A `z_gettreestate` response maps field-for-field into a
-    /// [`zaino_explorer_domain::Treestate`] — an active pool's root and
+    /// [`beazt_domain::Treestate`] — an active pool's root and
     /// state, and an inactive pool's absence, both preserved.
     #[test]
     fn z_gettreestate_response_maps_to_treestate() {
@@ -790,7 +790,7 @@ mod tests {
     }
 
     /// A `getrawmempool` verbose response maps field-for-field into a list
-    /// of [`zaino_explorer_domain::MempoolEntry`]s — no server needed.
+    /// of [`beazt_domain::MempoolEntry`]s — no server needed.
     #[test]
     fn verbose_raw_mempool_response_maps_to_mempool_entries() {
         use std::collections::BTreeMap;
@@ -832,7 +832,7 @@ mod tests {
     }
 
     /// A `getaddressutxos` entry maps field-for-field into an
-    /// [`zaino_explorer_domain::AddressUtxo`] — no server needed.
+    /// [`beazt_domain::AddressUtxo`] — no server needed.
     #[test]
     fn address_utxo_entry_maps_to_address_utxo() {
         use zaino_noderpc::wire::response::AddressUtxoEntry;
@@ -856,7 +856,7 @@ mod tests {
     }
 
     /// A `getaddressdeltas` entry maps field-for-field into an
-    /// [`zaino_explorer_domain::AddressDelta`] — no server needed.
+    /// [`beazt_domain::AddressDelta`] — no server needed.
     #[test]
     fn address_delta_entry_maps_to_address_delta() {
         use zaino_noderpc::wire::response::AddressDeltaEntry;
@@ -879,7 +879,7 @@ mod tests {
     }
 
     /// A `z_validateaddress` response maps field-for-field into an
-    /// [`zaino_explorer_domain::AddressValidity`] — no server needed.
+    /// [`beazt_domain::AddressValidity`] — no server needed.
     #[test]
     fn z_validateaddress_response_maps_to_address_validity() {
         use zaino_noderpc::wire::response::ZValidateAddressResponse;
@@ -923,7 +923,7 @@ mod tests {
     }
 
     /// A `z_listunifiedreceivers` response maps field-for-field into a
-    /// [`zaino_explorer_domain::UnifiedReceivers`] — no server needed.
+    /// [`beazt_domain::UnifiedReceivers`] — no server needed.
     #[test]
     fn unified_receivers_response_maps_to_unified_receivers() {
         use zaino_noderpc::wire::response::UnifiedReceiversResponse;
@@ -944,7 +944,7 @@ mod tests {
     }
 
     /// `getmininginfo` + `getnetworkinfo` + `getpeerinfo` combine
-    /// field-for-field into a [`zaino_explorer_domain::NodeDiagnostics`] —
+    /// field-for-field into a [`beazt_domain::NodeDiagnostics`] —
     /// no server needed.
     #[test]
     fn mining_network_peer_responses_combine_into_node_diagnostics() {
@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     /// A `getrawtransaction` verbosity-1 response maps field-for-field into
-    /// a [`zaino_explorer_domain::TransactionDetail`] — including each
+    /// a [`beazt_domain::TransactionDetail`] — including each
     /// output's value and address — no server needed.
     #[test]
     fn verbose_response_maps_to_transaction_detail() {
@@ -1120,7 +1120,7 @@ mod tests {
 
     /// `recent_blocks(1)` against a real mock server: proof the whole wire
     /// path (client call -> server -> engine composition -> wire response ->
-    /// our mapping) produces the right [`zaino_explorer_domain::BlockSummary`]
+    /// our mapping) produces the right [`beazt_domain::BlockSummary`]
     /// for the one real implementor, not just hand-constructed state.
     //
     // multi_thread required: drives a live jsonrpsee server (its own accept
@@ -1172,7 +1172,7 @@ mod tests {
     }
 
     /// `block` against a real mock server, by height: proof the whole wire
-    /// path produces a [`zaino_explorer_domain::BlockDetail`] with its
+    /// path produces a [`beazt_domain::BlockDetail`] with its
     /// txids populated, not just the summary fields `recent_blocks` needs.
     #[tokio::test(flavor = "multi_thread")]
     async fn block_against_a_real_server() {
@@ -1220,7 +1220,7 @@ mod tests {
 
     /// `block_deltas` against a real mock server — the differentiator
     /// capability (Zebra itself does not serve `getblockdeltas`). Proves
-    /// the whole wire path produces signed [`zaino_explorer_domain::
+    /// the whole wire path produces signed [`beazt_domain::
     /// ValueMovement`]s, not just the pure-function mapping.
     #[tokio::test(flavor = "multi_thread")]
     async fn block_deltas_against_a_real_server() {
@@ -1294,7 +1294,7 @@ mod tests {
     }
 
     /// `treestate` against a real mock server: proof the whole wire path
-    /// produces a [`zaino_explorer_domain::Treestate`] with an active
+    /// produces a [`beazt_domain::Treestate`] with an active
     /// pool's root and an inactive pool's absence.
     #[tokio::test(flavor = "multi_thread")]
     async fn treestate_against_a_real_server() {
@@ -1337,7 +1337,7 @@ mod tests {
     }
 
     /// `raw_mempool` against a real mock server: proof the whole wire path
-    /// produces [`zaino_explorer_domain::MempoolEntry`]s, not just the
+    /// produces [`beazt_domain::MempoolEntry`]s, not just the
     /// pure-function mapping.
     #[tokio::test(flavor = "multi_thread")]
     async fn raw_mempool_against_a_real_server() {
@@ -1643,7 +1643,7 @@ mod tests {
     }
 
     /// `blockchain_info` against a real mock server: proof the whole wire
-    /// path produces a [`zaino_explorer_domain::BlockchainInfo`], not just
+    /// path produces a [`beazt_domain::BlockchainInfo`], not just
     /// a hand-constructed value.
     #[tokio::test(flavor = "multi_thread")]
     async fn blockchain_info_against_a_real_server() {
@@ -1687,7 +1687,7 @@ mod tests {
     }
 
     /// `subtree_roots` against a real mock server: a scripted root maps
-    /// field-for-field into a [`zaino_explorer_domain::SubtreeRoots`].
+    /// field-for-field into a [`beazt_domain::SubtreeRoots`].
     #[tokio::test(flavor = "multi_thread")]
     async fn subtree_roots_against_a_real_server() {
         use zaino_primitives::types::{

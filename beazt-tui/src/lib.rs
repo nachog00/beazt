@@ -4,14 +4,14 @@
 //! function over it.
 #![forbid(unsafe_code)]
 
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
-use ratatui::Frame;
-use zaino_explorer_domain::{
+use beazt_domain::{
     AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, BlockchainInfo,
     ChainReader, MempoolEntry, NodeDiagnostics, SubtreeRoots, TransactionDetail, Treestate,
     UnifiedReceivers,
 };
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::Frame;
 
 /// How many recent blocks the TUI lists.
 const RECENT_BLOCKS: u32 = 10;
@@ -101,7 +101,7 @@ pub struct AppState {
     /// `SubtreeRoots`.
     subtree_roots: Option<Result<SubtreeRoots, String>>,
     /// The validator/mempool status, refreshed alongside the home screen.
-    node_status: Option<zaino_explorer_domain::NodeStatus>,
+    node_status: Option<beazt_domain::NodeStatus>,
 }
 
 impl AppState {
@@ -421,11 +421,7 @@ fn render_home(frame: &mut Frame, state: &AppState) {
         None => "Node status unavailable".to_string(),
     });
     frame.render_widget(
-        Paragraph::new(status_text).block(
-            Block::new()
-                .borders(Borders::ALL)
-                .title("zaino-block-explorer"),
-        ),
+        Paragraph::new(status_text).block(Block::new().borders(Borders::ALL).title("beazt")),
         status_area,
     );
 
@@ -874,9 +870,9 @@ fn truncate_hex(hex: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{render, AppState};
+    use beazt_domain::{BlockSummary, TransactionDetail};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use zaino_explorer_domain::{BlockSummary, TransactionDetail};
 
     /// A height in state renders into the frame buffer verbatim.
     #[test]
@@ -982,7 +978,7 @@ mod tests {
     /// or the node isn't ready) renders a plain placeholder, not a panic.
     #[test]
     fn renders_node_status_alongside_height() {
-        use zaino_explorer_domain::NodeStatus;
+        use beazt_domain::NodeStatus;
 
         let state = AppState {
             height: Some(300),
@@ -1068,7 +1064,7 @@ mod tests {
     #[test]
     fn renders_transaction_with_output_status() {
         use super::Screen;
-        use zaino_explorer_domain::TransactionOutput;
+        use beazt_domain::TransactionOutput;
 
         let txid = "ab".repeat(32);
         let state = AppState {
@@ -1166,7 +1162,7 @@ mod tests {
     #[test]
     fn renders_address_with_balance_and_txids() {
         use super::Screen;
-        use zaino_explorer_domain::AddressSummary;
+        use beazt_domain::AddressSummary;
 
         let state = AppState {
             screen: Screen::Address("t1example".to_string(), Ok(())),
@@ -1207,7 +1203,7 @@ mod tests {
     #[test]
     fn renders_address_with_utxos_and_deltas() {
         use super::Screen;
-        use zaino_explorer_domain::{AddressDelta, AddressSummary, AddressUtxo};
+        use beazt_domain::{AddressDelta, AddressSummary, AddressUtxo};
 
         let state = AppState {
             screen: Screen::Address("t1example".to_string(), Ok(())),
@@ -1254,7 +1250,7 @@ mod tests {
     #[test]
     fn renders_address_validity() {
         use super::Screen;
-        use zaino_explorer_domain::{AddressSummary, AddressValidity};
+        use beazt_domain::{AddressSummary, AddressValidity};
 
         let state = AppState {
             screen: Screen::Address("t1example".to_string(), Ok(())),
@@ -1293,7 +1289,7 @@ mod tests {
     #[test]
     fn renders_address_receivers_for_a_unified_address() {
         use super::Screen;
-        use zaino_explorer_domain::{AddressSummary, AddressValidity, UnifiedReceivers};
+        use beazt_domain::{AddressSummary, AddressValidity, UnifiedReceivers};
 
         let state = AppState {
             screen: Screen::Address("u1example".to_string(), Ok(())),
@@ -1361,7 +1357,7 @@ mod tests {
     #[test]
     fn renders_block_with_hash_and_txids() {
         use super::Screen;
-        use zaino_explorer_domain::BlockDetail;
+        use beazt_domain::BlockDetail;
 
         let state = AppState {
             screen: Screen::Block("300".to_string(), Ok(())),
@@ -1399,7 +1395,7 @@ mod tests {
     #[test]
     fn renders_block_with_value_movements() {
         use super::Screen;
-        use zaino_explorer_domain::{BlockDeltas, BlockDetail, TransactionDelta, ValueMovement};
+        use beazt_domain::{BlockDeltas, BlockDetail, TransactionDelta, ValueMovement};
 
         let state = AppState {
             screen: Screen::Block("300".to_string(), Ok(())),
@@ -1449,7 +1445,7 @@ mod tests {
     #[test]
     fn renders_treestate_with_active_and_inactive_pools() {
         use super::Screen;
-        use zaino_explorer_domain::{PoolTreestate, Treestate};
+        use beazt_domain::{PoolTreestate, Treestate};
 
         let state = AppState {
             screen: Screen::Treestate("300".to_string(), Ok(())),
@@ -1512,7 +1508,7 @@ mod tests {
     #[test]
     fn renders_mempool_with_entries() {
         use super::Screen;
-        use zaino_explorer_domain::MempoolEntry;
+        use beazt_domain::MempoolEntry;
 
         let state = AppState {
             screen: Screen::Mempool(Ok(())),
@@ -1600,7 +1596,7 @@ mod tests {
     #[test]
     fn renders_node_info_with_peers() {
         use super::Screen;
-        use zaino_explorer_domain::{MiningInfo, NetworkInfo, NodeDiagnostics, PeerInfo};
+        use beazt_domain::{MiningInfo, NetworkInfo, NodeDiagnostics, PeerInfo};
 
         let state = AppState {
             screen: Screen::NodeInfo(Ok(())),
@@ -1672,7 +1668,7 @@ mod tests {
     #[test]
     fn renders_blockchain_info_independently_of_node_diagnostics() {
         use super::Screen;
-        use zaino_explorer_domain::BlockchainInfo;
+        use beazt_domain::BlockchainInfo;
 
         let state = AppState {
             screen: Screen::NodeInfo(Err("not ready".to_string())),
@@ -1736,7 +1732,7 @@ mod tests {
     #[test]
     fn renders_subtree_roots() {
         use super::Screen;
-        use zaino_explorer_domain::{SubtreeRoot, SubtreeRoots};
+        use beazt_domain::{SubtreeRoot, SubtreeRoots};
 
         let state = AppState {
             screen: Screen::SubtreeRoots("sapling".to_string(), Ok(())),
@@ -1855,12 +1851,12 @@ mod tests {
     //
     // multi_thread required: drives a live jsonrpsee server (its own accept
     // loop) concurrently with the outbound RPC call, on one runtime — same
-    // justification as zaino-explorer-web's identical test.
+    // justification as beazt-web's identical test.
     #[tokio::test(flavor = "multi_thread")]
     async fn refresh_populates_live_chain_height() {
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_primitives::types::{BlockHash, Height};
         use zaino_service::testing::{MockChain, MockIndexerService};
@@ -1900,9 +1896,9 @@ mod tests {
     /// empty state — proof the error path is wired, not just the happy path.
     #[tokio::test(flavor = "multi_thread")]
     async fn refresh_reports_error_when_the_node_has_nothing_scripted() {
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
@@ -1938,13 +1934,13 @@ mod tests {
     /// `lookup_transaction` against a real mock server: proof the whole
     /// pipe (txid input -> transaction + per-output spend_info -> screen
     /// state) works end-to-end with the one real `ChainReader`, mirroring
-    /// `zaino-explorer-web`'s equivalent coverage for the same capability.
+    /// `beazt-web`'s equivalent coverage for the same capability.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_transaction_against_a_real_server() {
         use super::Screen;
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
@@ -1978,7 +1974,7 @@ mod tests {
         // the failure on the Transaction screen, not that the mock has a
         // transaction fixture (zaino-noderpc's own fixtures for that are
         // substantial; the happy-path mapping is already covered by
-        // zaino-explorer-zaino-client's pure-function tests).
+        // beazt-zaino-client's pure-function tests).
         match &state.screen {
             Screen::Transaction(txid, Err(_)) => assert_eq!(txid, &"ab".repeat(32)),
             other => panic!("expected a failed Transaction screen, got {other:?}"),
@@ -1990,15 +1986,15 @@ mod tests {
     /// `lookup_address` against a real mock server: proof the pipe reaches
     /// the real adapter. An address with no scripted history and no
     /// scripted tip reads as a zero balance (explorer policy), not an
-    /// error — mirroring `zaino-explorer-web`'s equivalent test and
-    /// `zaino-explorer-zaino-client`'s own coverage of the happy path with
+    /// error — mirroring `beazt-web`'s equivalent test and
+    /// `beazt-zaino-client`'s own coverage of the happy path with
     /// a scripted balance.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_address_against_a_real_server() {
         use super::Screen;
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
@@ -2049,12 +2045,12 @@ mod tests {
     /// `lookup_address` against a real mock server for a real mainnet
     /// unified address: proof the `is_unified` gate actually fires and
     /// `list_receivers` reaches the real adapter, mirroring
-    /// `zaino-explorer-web`'s equivalent coverage.
+    /// `beazt-web`'s equivalent coverage.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_address_against_a_real_server_for_a_unified_address() {
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
@@ -2101,14 +2097,14 @@ mod tests {
 
     /// `lookup_block` against a real mock server: proof the pipe reaches
     /// the real adapter and populates `BlockDetail`, including txids,
-    /// mirroring `zaino-explorer-web`'s equivalent coverage for the block
+    /// mirroring `beazt-web`'s equivalent coverage for the block
     /// route.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_block_against_a_real_server() {
         use super::Screen;
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_primitives::types::{
             Block, BlockHash, BlockHeader, BlockRef, BlockTreeSizes, BlockVerbose, ChainMetadata,
@@ -2261,14 +2257,14 @@ mod tests {
     }
 
     /// `lookup_mempool` against a real mock server: proof the pipe reaches
-    /// the real adapter, mirroring `zaino-explorer-web`'s equivalent
+    /// the real adapter, mirroring `beazt-web`'s equivalent
     /// coverage for the `/mempool` route.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_mempool_against_a_real_server() {
         use super::Screen;
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId};
         use zaino_service::testing::{MockChain, MockIndexerService};
@@ -2319,13 +2315,13 @@ mod tests {
     /// `NotReady`), so this proves the pipe reaches the real adapter and
     /// each degrades independently to a successful `NodeInfo` screen with
     /// absent sections, rather than failing the whole screen — mirroring
-    /// `zaino-explorer-web`'s equivalent coverage for the `/node` route.
+    /// `beazt-web`'s equivalent coverage for the `/node` route.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_node_diagnostics_against_a_real_server() {
         use super::Screen;
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
@@ -2366,16 +2362,16 @@ mod tests {
     }
 
     /// `lookup_subtree_roots` against a real mock server: proof the pipe
-    /// reaches the real adapter, mirroring `zaino-explorer-web`'s
+    /// reaches the real adapter, mirroring `beazt-web`'s
     /// equivalent coverage for the `/subtrees` route. Requires actually
     /// being on the `Treestate` screen first — the method does nothing
     /// otherwise.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_subtree_roots_against_a_real_server() {
         use super::Screen;
+        use beazt_zaino_client::ZainoClient;
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
-        use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_primitives::types::{Height, SubtreeRoot as PrimSubtreeRoot, TreeRoot};
         use zaino_service::testing::{MockChain, MockIndexerService};

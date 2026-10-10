@@ -1,7 +1,7 @@
 //! The explorer's domain: a block explorer's one driven port, reading chain
-//! state. The TUI and the web surface (see `zaino-explorer-web`,
-//! `zaino-explorer-tui`) are two driving adapters over this same domain;
-//! `zaino-explorer-zaino-client` is its one production implementor, talking
+//! state. The TUI and the web surface (see `beazt-web`,
+//! `beazt-tui`) are two driving adapters over this same domain;
+//! `beazt-zaino-client` is its one production implementor, talking
 //! to a live zainod. Nothing in this crate depends on jsonrpsee, zaino-noderpc,
 //! or any other transport detail — that coupling lives only in an adapter
 //! crate, injected at each driving adapter's composition root.

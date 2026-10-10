@@ -1,6 +1,6 @@
 //! Composition root for the TUI surface: terminal lifecycle, event loop, and
 //! the concrete [`ZainoClient`] adapter — none of which the tested library
-//! half (`zaino_explorer_tui::{AppState, render}`) knows about.
+//! half (`beazt_tui::{AppState, render}`) knows about.
 //!
 //! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`), same as the
 //! web surface. `q` quits from anywhere. On the home screen: `t` starts a
@@ -16,6 +16,8 @@
 use std::io;
 use std::time::Duration;
 
+use beazt_tui::{render, AppState, Screen};
+use beazt_zaino_client::ZainoClient;
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -24,8 +26,6 @@ use crossterm::ExecutableCommand;
 use jsonrpsee::http_client::HttpClientBuilder;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use zaino_explorer_tui::{render, AppState, Screen};
-use zaino_explorer_zaino_client::ZainoClient;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
