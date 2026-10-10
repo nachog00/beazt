@@ -6,7 +6,7 @@ authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 license = { workspace = true }
-publish = false
+publish = true
 description = "Dogfood block explorer: the domain's one driven port (ChainReader), with no transport dependency."
 
 [dependencies]
