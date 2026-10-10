@@ -13,7 +13,7 @@ reference client for zaino's node-rpc methods as they land.
 
 ## Architecture
 
-Ports-and-adapters, four crates:
+Ports-and-adapters, four crates under `crates/`:
 
 - **`beazt-domain`** — the one driven port, `ChainReader`. Zero transport
   dependency, not even on `zaino-noderpc`.

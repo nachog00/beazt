@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "beazt-domain",
-    "beazt-zaino-client",
-    "beazt-web",
-    "beazt-tui",
+    "crates/beazt-domain",
+    "crates/beazt-zaino-client",
+    "crates/beazt-web",
+    "crates/beazt-tui",
 ]
 
 [workspace.package]
