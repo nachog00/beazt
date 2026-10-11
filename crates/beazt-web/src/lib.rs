@@ -12,7 +12,7 @@ use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
 use beazt_domain::ChainReader;
-use maud::html;
+use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 /// The explorer's web router: every route is a live read through `reader`,
 /// never a cached or locally re-derived value — that's the whole point of a
@@ -33,6 +33,53 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
 /// How many recent blocks the home page lists.
 const RECENT_BLOCKS: u32 = 10;
 
+/// Pico's classless theme (vendored, not fetched at request time — this
+/// stays a single self-contained binary with no runtime network
+/// dependency beyond the one RPC URL). It styles bare semantic elements
+/// (`nav`, `table`, `h1`/`h2`, `a`, ...) directly, which is why every
+/// route below renders plain tags with only a handful of extra classes.
+const PICO_CSS: &str = include_str!("../assets/pico.classless.min.css");
+
+/// The handful of semantic classes this app's own markup uses that Pico
+/// has no opinion on, layered on top of Pico's CSS variables so they
+/// still track its (auto) light/dark theme.
+const EXTRA_CSS: &str = r#"
+p.error { color: var(--pico-del-color); }
+p.ok { color: var(--pico-ins-color); }
+p.empty, span.empty { color: var(--pico-muted-color); }
+.hash { font-family: var(--pico-font-family-monospace, monospace); word-break: break-all; }
+nav a[href="/"] { font-weight: bold; }
+"#;
+
+/// Wraps route content in the shared page shell: doctype, nav, and the
+/// embedded stylesheet. Every route's rendered markup passes through here.
+fn layout(title: &str, content: Markup) -> Html<String> {
+    let markup = html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (title) " — beazt" }
+                style { (PreEscaped(PICO_CSS)) (PreEscaped(EXTRA_CSS)) }
+            }
+            body {
+                nav {
+                    ul {
+                        li { a href="/" { strong { "beazt" } } }
+                    }
+                    ul {
+                        li { a href="/mempool" { "Mempool" } }
+                        li { a href="/node" { "Node" } }
+                    }
+                }
+                main { (content) }
+            }
+        }
+    };
+    Html(markup.into_string())
+}
+
 /// `GET /`: the chain height, node/mempool status, and a recent-blocks
 /// list, all fetched live and rendered independently of each other.
 async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
@@ -40,11 +87,11 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
     let blocks = reader.recent_blocks(RECENT_BLOCKS).await;
     let status = reader.node_status().await;
 
-    let body = html! {
-        h1 { "beazt" }
+    let content = html! {
+        h1 { "Chain" }
         @match height {
-            Ok(height) => p { "Chain height: " (height) },
-            Err(e) => p { "RPC error: " (e.to_string()) },
+            Ok(height) => p { "Chain height: " strong { (height) } },
+            Err(e) => p.error { "RPC error: " (e.to_string()) },
         }
         @match status {
             Ok(status) => p {
@@ -54,21 +101,27 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
                 (status.mempool_size) " tx, " (status.mempool_bytes) " bytes"
                 " — " a href="/node" { "node info" }
             },
-            Err(e) => p { "Node status unavailable: " (e.to_string()) },
+            Err(e) => p.error { "Node status unavailable: " (e.to_string()) },
         }
+        h2 { "Recent blocks" }
         @match blocks {
-            Ok(blocks) => ul {
-                @for block in &blocks {
-                    li {
-                        a href=(format!("/block/{}", block.height)) { (block.height) }
-                        " — " (block.hash) " — " (block.time) " — " (block.tx_count) " tx"
+            Ok(blocks) => table {
+                thead { tr { th { "Height" } th { "Hash" } th { "Time" } th { "Tx" } } }
+                tbody {
+                    @for block in &blocks {
+                        tr {
+                            td { a href=(format!("/block/{}", block.height)) { (block.height) } }
+                            td.hash { (block.hash) }
+                            td { (block.time) }
+                            td { (block.tx_count) }
+                        }
                     }
                 }
             },
-            Err(e) => p { "RPC error: " (e.to_string()) },
+            Err(e) => p.error { "RPC error: " (e.to_string()) },
         }
     };
-    Html(body.into_string())
+    layout("Home", content)
 }
 
 /// `GET /block/{id}`: one block's detail — hash, time, every transaction id
@@ -79,32 +132,40 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
 /// form) and renders independently of the transaction list, so a failure
 /// there doesn't hide the rest of the page.
 async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) -> Html<String> {
-    let body = match reader.block(id.clone()).await {
+    let content = match reader.block(id.clone()).await {
         Ok(detail) => {
             let deltas = reader.block_deltas(detail.hash.clone()).await;
             html! {
                 h1 { "Block " (detail.height) }
-                p { "Hash: " (detail.hash) }
-                p { "Time: " (detail.time) }
-                p { a href=(format!("/block/{id}/treestate")) { "Treestate" } }
+                article {
+                    p { "Hash: " span.hash { (detail.hash) } }
+                    p { "Time: " (detail.time) }
+                    p { a href=(format!("/block/{id}/treestate")) { "Treestate" } }
+                }
                 h2 { "Transactions" }
-                ul {
-                    @for txid in &detail.tx_ids {
-                        li { a href=(format!("/tx/{txid}")) { (txid) } }
+                table {
+                    thead { tr { th { "Tx ID" } } }
+                    tbody {
+                        @for txid in &detail.tx_ids {
+                            tr { td.hash { a href=(format!("/tx/{txid}")) { (txid) } } }
+                        }
                     }
                 }
                 h2 { "Value movements" }
                 @match deltas {
-                    Ok(block_deltas) => ul {
-                        @for delta in &block_deltas.deltas {
-                            li {
-                                a href=(format!("/tx/{}", delta.txid)) { (delta.txid) }
-                                ul {
-                                    @for movement in delta.inputs.iter().chain(delta.outputs.iter()) {
-                                        li {
-                                            (movement.value_zat) " zat"
+                    Ok(block_deltas) => table {
+                        thead { tr { th { "Tx ID" } th { "Value" } th { "Address" } } }
+                        tbody {
+                            @for delta in &block_deltas.deltas {
+                                @for movement in delta.inputs.iter().chain(delta.outputs.iter()) {
+                                    tr {
+                                        td.hash { a href=(format!("/tx/{}", delta.txid)) { (delta.txid) } }
+                                        td { (movement.value_zat) " zat" }
+                                        td {
                                             @if let Some(address) = &movement.address {
-                                                " — " (address)
+                                                (address)
+                                            } @else {
+                                                span.empty { "—" }
                                             }
                                         }
                                     }
@@ -112,16 +173,16 @@ async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) 
                             }
                         }
                     },
-                    Err(e) => p { "RPC error: " (e.to_string()) },
+                    Err(e) => p.error { "RPC error: " (e.to_string()) },
                 }
             }
         }
         Err(e) => html! {
             h1 { "Block " (id) }
-            p { "RPC error: " (e.to_string()) }
+            p.error { "RPC error: " (e.to_string()) }
         },
     };
-    Html(body.into_string())
+    layout(&format!("Block {id}"), content)
 }
 
 /// `GET /block/{id}/treestate`: a block's shielded commitment-tree state,
@@ -133,10 +194,10 @@ async fn treestate<C: ChainReader>(
     State(reader): State<C>,
     Path(id): Path<String>,
 ) -> Html<String> {
-    let body = match reader.treestate(id.clone()).await {
+    let content = match reader.treestate(id.clone()).await {
         Ok(state) => html! {
             h1 { "Treestate for block " (state.height) }
-            p { "Hash: " (state.hash) }
+            p { "Hash: " span.hash { (state.hash) } }
             p { "Time: " (state.time) }
             @for (label, pool, tree) in [
                 ("Sapling", "sapling", &state.sapling),
@@ -145,24 +206,24 @@ async fn treestate<C: ChainReader>(
             ] {
                 h2 { (label) }
                 @match tree {
-                    Some(tree) => div {
+                    Some(tree) => article {
                         @match &tree.final_root {
-                            Some(root) => p { "Final root: " (root) },
+                            Some(root) => p { "Final root: " span.hash { (root) } },
                             None => p { "Final root: unavailable" },
                         }
-                        p { "Final state: " (truncate_hex(&tree.final_state)) }
+                        p { "Final state: " span.hash { (truncate_hex(&tree.final_state)) } }
                         p { a href=(format!("/subtrees/{pool}/0")) { "Subtree roots" } }
                     },
-                    None => p { "Not active at this block." },
+                    None => p.empty { "Not active at this block." },
                 }
             }
         },
         Err(e) => html! {
             h1 { "Treestate for block " (id) }
-            p { "RPC error: " (e.to_string()) }
+            p.error { "RPC error: " (e.to_string()) }
         },
     };
-    Html(body.into_string())
+    layout(&format!("Treestate {id}"), content)
 }
 
 /// `GET /subtrees/{pool}/{start_index}`: a contiguous run of complete
@@ -174,25 +235,28 @@ async fn subtree_roots<C: ChainReader>(
     State(reader): State<C>,
     Path((pool, start_index)): Path<(String, u16)>,
 ) -> Html<String> {
-    let body = match reader.subtree_roots(pool.clone(), start_index).await {
+    let content = match reader.subtree_roots(pool.clone(), start_index).await {
         Ok(roots) => html! {
             h1 { "Subtree roots — " (roots.pool) " from index " (roots.start_index) }
             @if roots.roots.is_empty() {
-                p { "None (past the end of this pool's completed subtrees, or none yet)" }
+                p.empty { "None (past the end of this pool's completed subtrees, or none yet)" }
             } @else {
-                ul {
-                    @for root in &roots.roots {
-                        li { (root.root) " — completed at height " (root.end_height) }
+                table {
+                    thead { tr { th { "Root" } th { "Completed at height" } } }
+                    tbody {
+                        @for root in &roots.roots {
+                            tr { td.hash { (root.root) } td { (root.end_height) } }
+                        }
                     }
                 }
             }
         },
         Err(e) => html! {
             h1 { "Subtree roots — " (pool) }
-            p { "RPC error: " (e.to_string()) }
+            p.error { "RPC error: " (e.to_string()) }
         },
     };
-    Html(body.into_string())
+    layout("Subtree roots", content)
 }
 
 /// Truncates a long hex string for display, noting its full length — a
@@ -211,7 +275,7 @@ async fn transaction<C: ChainReader>(
     State(reader): State<C>,
     Path(txid): Path<String>,
 ) -> Html<String> {
-    let body = match reader.transaction(txid.clone()).await {
+    let content = match reader.transaction(txid.clone()).await {
         Ok(tx) => {
             let mut statuses = Vec::with_capacity(tx.outputs.len());
             for index in 0..tx.outputs.len() {
@@ -220,23 +284,32 @@ async fn transaction<C: ChainReader>(
                 statuses.push(describe_output_status(&reader, &tx.txid, index).await);
             }
             html! {
-                h1 { "Transaction " (tx.txid) }
-                p { "Size: " (tx.size) " bytes" }
-                @if let Some(height) = tx.height {
-                    p { "Block height: " (height) }
-                }
-                @if let Some(confirmations) = tx.confirmations {
-                    p { "Confirmations: " (confirmations) }
+                h1 { "Transaction " span.hash { (tx.txid) } }
+                article {
+                    p { "Size: " (tx.size) " bytes" }
+                    @if let Some(height) = tx.height {
+                        p { "Block height: " (height) }
+                    }
+                    @if let Some(confirmations) = tx.confirmations {
+                        p { "Confirmations: " (confirmations) }
+                    }
                 }
                 h2 { "Outputs" }
-                ul {
-                    @for (output, status) in tx.outputs.iter().zip(statuses.iter()) {
-                        li {
-                            (output.value_zat) " zat"
-                            @if !output.addresses.is_empty() {
-                                " — " (output.addresses.join(", "))
+                table {
+                    thead { tr { th { "Value" } th { "Addresses" } th { "Status" } } }
+                    tbody {
+                        @for (output, status) in tx.outputs.iter().zip(statuses.iter()) {
+                            tr {
+                                td { (output.value_zat) " zat" }
+                                td {
+                                    @if output.addresses.is_empty() {
+                                        span.empty { "—" }
+                                    } @else {
+                                        (output.addresses.join(", "))
+                                    }
+                                }
+                                td { (status) }
                             }
-                            " — " (status)
                         }
                     }
                 }
@@ -244,10 +317,10 @@ async fn transaction<C: ChainReader>(
         }
         Err(e) => html! {
             h1 { "Transaction " (txid) }
-            p { "RPC error: " (e.to_string()) }
+            p.error { "RPC error: " (e.to_string()) }
         },
     };
-    Html(body.into_string())
+    layout(&format!("Tx {txid}"), content)
 }
 
 /// Describes one output's status, combining two RPCs that each leave a
@@ -283,14 +356,14 @@ async fn address<C: ChainReader>(
     let validity = reader.validate_address(address.clone()).await;
     let validity_line = html! {
         @match &validity {
-            Ok(v) if v.valid => p {
+            Ok(v) if v.valid => p.ok {
                 "Valid address"
                 @if let Some(kind) = &v.kind {
                     " — " (kind)
                 }
             },
-            Ok(_) => p { "Not a recognized address on this network" },
-            Err(e) => p { "Validity unavailable: " (e.to_string()) },
+            Ok(_) => p.empty { "Not a recognized address on this network" },
+            Err(e) => p.error { "Validity unavailable: " (e.to_string()) },
         }
     };
     // z_listunifiedreceivers rejects any non-unified address as a
@@ -302,53 +375,72 @@ async fn address<C: ChainReader>(
         match reader.list_receivers(address.clone()).await {
             Ok(receivers) => html! {
                 h2 { "Receivers" }
-                ul {
-                    @if let Some(r) = &receivers.orchard { li { "Orchard: " (r) } }
-                    @if let Some(r) = &receivers.sapling { li { "Sapling: " (r) } }
-                    @if let Some(r) = &receivers.p2pkh { li { "Transparent (P2PKH): " (r) } }
-                    @if let Some(r) = &receivers.p2sh { li { "Transparent (P2SH): " (r) } }
+                table {
+                    tbody {
+                        @if let Some(r) = &receivers.orchard { tr { td { "Orchard:" } td.hash { (r) } } }
+                        @if let Some(r) = &receivers.sapling { tr { td { "Sapling:" } td.hash { (r) } } }
+                        @if let Some(r) = &receivers.p2pkh { tr { td { "Transparent (P2PKH):" } td.hash { (r) } } }
+                        @if let Some(r) = &receivers.p2sh { tr { td { "Transparent (P2SH):" } td.hash { (r) } } }
+                    }
                 }
             },
-            Err(e) => html! { p { "Receivers unavailable: " (e.to_string()) } },
+            Err(e) => html! { p.error { "Receivers unavailable: " (e.to_string()) } },
         }
     } else {
         html! {}
     };
-    let body = match reader.address(address.clone()).await {
+    let content = match reader.address(address.clone()).await {
         Ok(summary) => html! {
-            h1 { "Address " (summary.address) }
+            h1 { "Address " span.hash { (summary.address) } }
             (validity_line)
             (receivers_section)
-            p { "Balance: " (summary.balance_zat) " zat" }
-            p { "Lifetime received: " (summary.received_zat) " zat" }
+            article {
+                p { "Balance: " (summary.balance_zat) " zat" }
+                p { "Lifetime received: " (summary.received_zat) " zat" }
+            }
             h2 { "Transactions" }
-            ul {
-                @for txid in &summary.txids {
-                    li { a href=(format!("/tx/{txid}")) { (txid) } }
+            @if summary.txids.is_empty() {
+                p.empty { "None" }
+            } @else {
+                table {
+                    tbody {
+                        @for txid in &summary.txids {
+                            tr { td.hash { a href=(format!("/tx/{txid}")) { (txid) } } }
+                        }
+                    }
                 }
             }
             h2 { "Unspent outputs" }
             @if summary.utxos.is_empty() {
-                p { "None (or unavailable on this deployment)" }
+                p.empty { "None (or unavailable on this deployment)" }
             } @else {
-                ul {
-                    @for utxo in &summary.utxos {
-                        li {
-                            a href=(format!("/tx/{}", utxo.txid)) { (utxo.txid) }
-                            ":" (utxo.output_index) " — " (utxo.value_zat) " zat — height " (utxo.height)
+                table {
+                    thead { tr { th { "Tx" } th { "Index" } th { "Value" } th { "Height" } } }
+                    tbody {
+                        @for utxo in &summary.utxos {
+                            tr {
+                                td.hash { a href=(format!("/tx/{}", utxo.txid)) { (utxo.txid) } }
+                                td { (utxo.output_index) }
+                                td { (utxo.value_zat) " zat" }
+                                td { (utxo.height) }
+                            }
                         }
                     }
                 }
             }
             h2 { "Value changes" }
             @if summary.deltas.is_empty() {
-                p { "None (or unavailable on this deployment)" }
+                p.empty { "None (or unavailable on this deployment)" }
             } @else {
-                ul {
-                    @for delta in &summary.deltas {
-                        li {
-                            a href=(format!("/tx/{}", delta.txid)) { (delta.txid) }
-                            " — " (delta.value_zat) " zat — height " (delta.height)
+                table {
+                    thead { tr { th { "Tx" } th { "Value" } th { "Height" } } }
+                    tbody {
+                        @for delta in &summary.deltas {
+                            tr {
+                                td.hash { a href=(format!("/tx/{}", delta.txid)) { (delta.txid) } }
+                                td { (delta.value_zat) " zat" }
+                                td { (delta.height) }
+                            }
                         }
                     }
                 }
@@ -358,28 +450,40 @@ async fn address<C: ChainReader>(
             h1 { "Address " (address) }
             (validity_line)
             (receivers_section)
-            p { "RPC error: " (e.to_string()) }
+            p.error { "RPC error: " (e.to_string()) }
         },
     };
-    Html(body.into_string())
+    layout(&format!("Address {address}"), content)
 }
 
 /// `GET /mempool`: every transaction currently in the mempool, with its
 /// size, fee, and the tip height it was validated against. Linked from the
 /// home page's status line.
 async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
-    let body = match reader.raw_mempool().await {
+    let content = match reader.raw_mempool().await {
         Ok(entries) => html! {
             h1 { "Mempool" }
             p { (entries.len()) " transactions" }
-            ul {
-                @for entry in &entries {
-                    li {
-                        a href=(format!("/tx/{}", entry.txid)) { (entry.txid) }
-                        " — " (entry.size) " bytes — " (entry.fee_zat) " zat fee — entered at height "
-                        (entry.height)
-                        @if let Some(time) = entry.time {
-                            " — " (time)
+            @if entries.is_empty() {
+                p.empty { "Nothing pending." }
+            } @else {
+                table {
+                    thead { tr { th { "Tx" } th { "Size" } th { "Fee" } th { "Height" } th { "Time" } } }
+                    tbody {
+                        @for entry in &entries {
+                            tr {
+                                td.hash { a href=(format!("/tx/{}", entry.txid)) { (entry.txid) } }
+                                td { (entry.size) " bytes" }
+                                td { (entry.fee_zat) " zat" }
+                                td { (entry.height) }
+                                td {
+                                    @if let Some(time) = entry.time {
+                                        (time)
+                                    } @else {
+                                        span.empty { "—" }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -387,10 +491,10 @@ async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         },
         Err(e) => html! {
             h1 { "Mempool" }
-            p { "RPC error: " (e.to_string()) }
+            p.error { "RPC error: " (e.to_string()) }
         },
     };
-    Html(body.into_string())
+    layout("Mempool", content)
 }
 
 /// `GET /node`: richer node diagnostics than the home page's compact status
@@ -414,25 +518,25 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         (ping_line)
         h2 { "Blockchain" }
         @match &blockchain {
-            Ok(info) => div {
+            Ok(info) => article {
                 p { "Chain: " (info.chain) }
                 p { "Blocks: " (info.blocks) " — headers: " (info.headers) }
-                p { "Best block: " (info.best_block_hash) }
+                p { "Best block: " span.hash { (info.best_block_hash) } }
                 p { "Difficulty: " (info.difficulty) }
                 p { "Verification progress: " (info.verification_progress) }
                 p { "Size on disk: " (info.size_on_disk) " bytes" }
                 p { "Estimated network height: " (info.estimated_height) }
             },
-            Err(e) => p { "RPC error: " (e.to_string()) },
+            Err(e) => p.error { "RPC error: " (e.to_string()) },
         }
     };
-    let body = match reader.node_diagnostics().await {
+    let content = match reader.node_diagnostics().await {
         Ok(diagnostics) => html! {
             h1 { "Node info" }
             (blockchain_section)
             h2 { "Mining" }
             @match &diagnostics.mining {
-                Some(mining) => div {
+                Some(mining) => article {
                     p { "Chain: " (mining.chain) }
                     @if let Some(difficulty) = mining.difficulty {
                         p { "Difficulty: " (difficulty) }
@@ -441,11 +545,11 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
                         p { "Network solution rate: " (sol_ps) " sol/s" }
                     }
                 },
-                None => p { "Unavailable on this deployment" },
+                None => p.empty { "Unavailable on this deployment" },
             }
             h2 { "Network" }
             @match &diagnostics.network {
-                Some(network) => div {
+                Some(network) => article {
                     p { "Protocol version: " (network.protocol_version) }
                     p { "Local services: " (network.local_services) }
                     p { "Relay fee: " (network.relay_fee) " ZEC" }
@@ -453,17 +557,20 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
                         p { "Warnings: " (network.warnings) }
                     }
                 },
-                None => p { "Unavailable on this deployment" },
+                None => p.empty { "Unavailable on this deployment" },
             }
             h2 { "Peers" }
             @if diagnostics.peers.is_empty() {
-                p { "None" }
+                p.empty { "None" }
             } @else {
-                ul {
-                    @for peer in &diagnostics.peers {
-                        li {
-                            (peer.addr) " — "
-                            @if peer.inbound { "inbound" } @else { "outbound" }
+                table {
+                    thead { tr { th { "Address" } th { "Direction" } } }
+                    tbody {
+                        @for peer in &diagnostics.peers {
+                            tr {
+                                td.hash { (peer.addr) }
+                                td { @if peer.inbound { "inbound" } @else { "outbound" } }
+                            }
                         }
                     }
                 }
@@ -472,10 +579,10 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         Err(e) => html! {
             h1 { "Node info" }
             (blockchain_section)
-            p { "RPC error: " (e.to_string()) }
+            p.error { "RPC error: " (e.to_string()) }
         },
     };
-    Html(body.into_string())
+    layout("Node info", content)
 }
 
 #[cfg(test)]

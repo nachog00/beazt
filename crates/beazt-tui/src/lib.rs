@@ -10,7 +10,9 @@ use beazt_domain::{
     UnifiedReceivers,
 };
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 /// How many recent blocks the TUI lists.
@@ -366,6 +368,62 @@ async fn describe_output_status<C: ChainReader>(reader: &C, txid: &str, index: u
     }
 }
 
+const ACCENT: Color = Color::Cyan;
+const OK: Color = Color::Green;
+const ERR: Color = Color::Red;
+const WARN: Color = Color::Yellow;
+
+/// A bordered block with the shared look every screen renders into:
+/// rounded corners, an accent-colored border, and a bold accent title.
+/// No per-screen border styling drift.
+fn styled_block(title: &str) -> Block<'static> {
+    Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ACCENT))
+        .title(Line::styled(
+            title.to_string(),
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+}
+
+/// Colors one line by what it says, not by which screen it's on — every
+/// `render_*` function below builds the exact same plain-text lines it
+/// always has (so every existing text assertion still matches), and this
+/// is a pure presentation layer on top, applied uniformly through
+/// [`style_lines`].
+fn classify_line(line: &str) -> Style {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("RPC error")
+        || trimmed.contains("error:")
+        || trimmed == "Validator: unresponsive"
+    {
+        Style::new().fg(ERR)
+    } else if trimmed.contains("unavailable")
+        || trimmed.contains("not active")
+        || trimmed.starts_with("none")
+        || trimmed.starts_with("None")
+    {
+        Style::new().fg(WARN)
+    } else if trimmed == "Validator: responsive" || trimmed.starts_with("Chain height:") {
+        Style::new().fg(OK)
+    } else if !trimmed.is_empty() && trimmed.ends_with(':') {
+        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    }
+}
+
+/// Turns a `\n`-joined block of plain text into styled lines, ready for
+/// [`Paragraph::new`].
+fn style_lines(text: &str) -> Text<'static> {
+    Text::from(
+        text.lines()
+            .map(|line| Line::styled(line.to_string(), classify_line(line)))
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// Render the current state into `frame`, whichever screen is active.
 pub fn render(frame: &mut Frame, state: &AppState) {
     match &state.screen {
@@ -421,7 +479,7 @@ fn render_home(frame: &mut Frame, state: &AppState) {
         None => "Node status unavailable".to_string(),
     });
     frame.render_widget(
-        Paragraph::new(status_text).block(Block::new().borders(Borders::ALL).title("beazt")),
+        Paragraph::new(style_lines(&status_text)).block(styled_block("beazt")),
         status_area,
     );
 
@@ -429,21 +487,24 @@ fn render_home(frame: &mut Frame, state: &AppState) {
         .blocks
         .iter()
         .map(|block| {
-            ListItem::new(format!(
-                "{}  {}  {}  {} tx",
-                block.height, block.hash, block.time, block.tx_count
-            ))
+            ListItem::new(Line::from(vec![
+                Span::styled(block.height.to_string(), Style::new().fg(ACCENT)),
+                Span::raw(format!(
+                    "  {}  {}  {} tx",
+                    block.hash, block.time, block.tx_count
+                )),
+            ]))
         })
         .collect();
     frame.render_widget(
-        List::new(rows).block(Block::new().borders(Borders::ALL).title("Recent blocks")),
+        List::new(rows).block(styled_block("Recent blocks")),
         blocks_area,
     );
 }
 
 fn render_input(frame: &mut Frame, buffer: &str, title: &str) {
     frame.render_widget(
-        Paragraph::new(format!("{buffer}_")).block(Block::new().borders(Borders::ALL).title(title)),
+        Paragraph::new(format!("{buffer}_")).block(styled_block(title)),
         frame.area(),
     );
 }
@@ -486,7 +547,7 @@ fn render_transaction(
         }
     };
     frame.render_widget(
-        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Transaction")),
+        Paragraph::new(style_lines(&text)).block(styled_block("Transaction")),
         frame.area(),
     );
 }
@@ -592,7 +653,7 @@ fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>,
         }
     };
     frame.render_widget(
-        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Address")),
+        Paragraph::new(style_lines(&text)).block(styled_block("Address")),
         frame.area(),
     );
 }
@@ -638,7 +699,7 @@ fn render_block(frame: &mut Frame, id: &str, result: &Result<(), String>, state:
         }
     };
     frame.render_widget(
-        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Block")),
+        Paragraph::new(style_lines(&text)).block(styled_block("Block")),
         frame.area(),
     );
 }
@@ -680,7 +741,7 @@ fn render_treestate(frame: &mut Frame, id: &str, result: &Result<(), String>, st
         }
     };
     frame.render_widget(
-        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Treestate")),
+        Paragraph::new(style_lines(&text)).block(styled_block("Treestate")),
         frame.area(),
     );
 }
@@ -720,7 +781,7 @@ fn render_subtree_roots(
         }
     };
     frame.render_widget(
-        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Subtree roots")),
+        Paragraph::new(style_lines(&text)).block(styled_block("Subtree roots")),
         frame.area(),
     );
 }
@@ -749,7 +810,7 @@ fn render_mempool(frame: &mut Frame, result: &Result<(), String>, state: &AppSta
         }
     };
     frame.render_widget(
-        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Mempool")),
+        Paragraph::new(style_lines(&text)).block(styled_block("Mempool")),
         frame.area(),
     );
 }
@@ -852,7 +913,7 @@ fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppS
         }
     };
     frame.render_widget(
-        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Node info")),
+        Paragraph::new(style_lines(&text)).block(styled_block("Node info")),
         frame.area(),
     );
 }
