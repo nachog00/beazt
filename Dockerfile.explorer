@@ -1,14 +1,12 @@
 # syntax=docker/dockerfile:1
 #
-# Dogfood block-explorer image: builds either zaino-explorer-web or
-# zaino-explorer-tui from this workspace, selected by BIN_PACKAGE/BIN_NAME.
-# Kept separate from the production Dockerfile (zainod) on purpose — this
-# never touches that build.
+# Dogfood block-explorer image: builds either beazt-web or beazt-tui from
+# this workspace, selected by BIN_PACKAGE/BIN_NAME.
 #
 # Build (web):
-#   --build-arg BIN_PACKAGE=zaino-explorer-web --build-arg BIN_NAME=web
+#   --build-arg BIN_PACKAGE=beazt-web --build-arg BIN_NAME=web
 # Build (tui):
-#   --build-arg BIN_PACKAGE=zaino-explorer-tui --build-arg BIN_NAME=tui
+#   --build-arg BIN_PACKAGE=beazt-tui --build-arg BIN_NAME=tui
 
 ############################
 # Builder
@@ -17,12 +15,13 @@ FROM docker.io/library/rust:1.96.0-bookworm AS builder
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 WORKDIR /app
 
-ARG BIN_PACKAGE=zaino-explorer-web
+ARG BIN_PACKAGE=beazt-web
 ARG BIN_NAME=web
 
-# Same build deps as the production Dockerfile — several of this workspace's
-# crates pull in librocksdb-sys/protoc transitively regardless of which
-# binary is selected.
+# zaino-service (a dev-dependency, for the mock-server test fixtures) pulls
+# in librocksdb-sys/protoc transitively regardless of which binary is
+# selected, so these are needed even though neither binary touches RocksDB
+# itself.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pkg-config=1.8.1-1 \
       clang=1:14.0-55.7~deb12u1 \
@@ -36,14 +35,10 @@ RUN rustup component add clippy rustfmt
 
 COPY . .
 
-# Same cache-mount paths as the production build, so this benefits from the
-# same warm BuildKit PVC cache (cargo registry, git, target/) regular zainod
-# builds already populate — rocksdb in particular is expensive to compile
-# cold and this avoids paying that cost again.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo install --locked --path "packages/${BIN_PACKAGE}" --bin "${BIN_NAME}" --root /out
+    cargo install --locked --path "crates/${BIN_PACKAGE}" --bin "${BIN_NAME}" --root /out
 
 ############################
 # Runtime
