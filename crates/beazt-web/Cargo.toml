@@ -16,9 +16,11 @@ maud = { workspace = true }
 tokio = { workspace = true }
 
 # The binary's composition root alone: it is the one place that knows the
-# concrete adapter. The library half of this crate (`src/lib.rs`) never
-# imports either of these — only `src/bin/web.rs` does.
+# concrete adapter(s). The library half of this crate (`src/lib.rs`) never
+# imports any of these — it only knows the `ChainReader`/`PriceOracle`
+# ports — only `src/bin/web.rs` does.
 beazt-zaino-client = { path = "../beazt-zaino-client" }
+beazt-price-client = { path = "../beazt-price-client" }
 jsonrpsee = { workspace = true, features = ["http-client"] }
 
 [dev-dependencies]

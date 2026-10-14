@@ -11,3 +11,4 @@ description = "Dogfood block explorer: the domain's one driven port (ChainReader
 
 [dependencies]
 thiserror = { workspace = true }
+time = { workspace = true }

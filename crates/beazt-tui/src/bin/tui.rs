@@ -2,8 +2,10 @@
 //! the concrete [`ZainoClient`] adapter — none of which the tested library
 //! half (`beazt_tui::{AppState, render}`) knows about.
 //!
-//! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`), same as the
-//! web surface. `q` quits from anywhere. On the home screen: `t` starts a
+//! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`) and
+//! `BEAZT_USD_PRICE` (unset by default; opts into a live CoinGecko-backed
+//! ZEC/USD price), same as the web surface. `q` quits from anywhere. On the
+//! home screen: `t` starts a
 //! txid lookup, `a` starts an address lookup, `b` starts a block
 //! height/hash lookup, `m` looks up the mempool directly, `n` looks up
 //! node diagnostics directly, and the chain height refreshes every 5s.
@@ -14,8 +16,11 @@
 //! subtree-roots screen: Esc goes back home.
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
+use beazt_domain::NullPriceOracle;
+use beazt_price_client::CoinGeckoPriceOracle;
 use beazt_tui::{render, AppState, Screen};
 use beazt_zaino_client::ZainoClient;
 use crossterm::event::{self, Event, KeyCode};
@@ -29,6 +34,10 @@ use ratatui::Terminal;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// How often the CoinGecko-backed oracle refreshes its cached price, when
+/// enabled. Cosmetic data — no need for anything tighter.
+const PRICE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
 #[tokio::main]
 async fn main() {
     let rpc_url =
@@ -38,8 +47,17 @@ async fn main() {
         .unwrap_or_else(|e| panic!("invalid ZAINO_RPC_URL {rpc_url:?}: {e}"));
     let reader = ZainoClient::new(client);
 
+    let mut state = AppState::default();
+    if std::env::var("BEAZT_USD_PRICE").is_ok() {
+        state.set_price_oracle(Arc::new(CoinGeckoPriceOracle::spawn(
+            PRICE_REFRESH_INTERVAL,
+        )));
+    } else {
+        state.set_price_oracle(Arc::new(NullPriceOracle));
+    }
+
     let mut terminal = setup_terminal().expect("set up terminal");
-    let result = run(&mut terminal, &reader).await;
+    let result = run(&mut terminal, &reader, state).await;
     teardown_terminal(&mut terminal).expect("restore terminal");
     result.expect("run loop");
 }
@@ -59,8 +77,8 @@ fn teardown_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> i
 async fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     reader: &ZainoClient,
+    mut state: AppState,
 ) -> io::Result<()> {
-    let mut state = AppState::default();
     state.refresh(reader).await;
     let mut last_refresh = tokio::time::Instant::now();
 

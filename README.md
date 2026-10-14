@@ -13,20 +13,27 @@ reference client for zaino's node-rpc methods as they land.
 
 ## Architecture
 
-Ports-and-adapters, four crates under `crates/`:
+Ports-and-adapters, five crates under `crates/`:
 
-- **`beazt-domain`** — the one driven port, `ChainReader`. Zero transport
-  dependency, not even on `zaino-noderpc`.
+- **`beazt-domain`** — the two driven ports: `ChainReader` (zero transport
+  dependency, not even on `zaino-noderpc`) and `PriceOracle` (a cached
+  ZEC/USD price, optional — `NullPriceOracle` is the default). Also owns
+  the pure zat/ZEC/USD/timestamp/thousands-grouping formatting helpers
+  both driving adapters share.
 - **`beazt-zaino-client`** — the one production `ChainReader`: wraps
   `zaino-noderpc`'s generated jsonrpsee client. Plain, no caching or retry.
+- **`beazt-price-client`** — the one production `PriceOracle`: a
+  background-refreshed cache backed by CoinGecko's free API. The only
+  crate that gives this app a second external network dependency, and
+  only when a composition root opts into one.
 - **`beazt-web`** — a driving adapter: server-rendered web surface (axum +
   maud), generic over `ChainReader`.
 - **`beazt-tui`** — a driving adapter: terminal surface (ratatui +
   crossterm), generic over `ChainReader`.
 
 Each driving adapter's composition root (`src/bin/*.rs`) is the only place
-that knows the concrete `ZainoClient` adapter type; the library half of
-each (`src/lib.rs`) never does.
+that knows the concrete `ZainoClient`/`CoinGeckoPriceOracle` adapter types;
+the library half of each (`src/lib.rs`) never does.
 
 ## Capability coverage
 
@@ -59,7 +66,10 @@ ZAINO_RPC_URL=http://127.0.0.1:8232 \
 ```
 
 Both talk to any zainod's JSON-RPC endpoint; neither needs anything beyond
-that one URL.
+that one URL. Set `BEAZT_USD_PRICE=1` (either binary) to additionally opt
+into a live CoinGecko-backed ZEC/USD price next to every amount — unset by
+default, so the RPC URL stays the only network dependency unless you ask
+for the second one.
 
 ## Testing
 

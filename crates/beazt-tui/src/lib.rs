@@ -4,15 +4,17 @@
 //! function over it.
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
+
 use beazt_domain::{
-    AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, BlockchainInfo,
-    ChainReader, MempoolEntry, NodeDiagnostics, SubtreeRoots, TransactionDetail, Treestate,
-    UnifiedReceivers,
+    format_timestamp, format_usd, format_zec, group_thousands, AddressSummary, AddressValidity,
+    BlockDeltas, BlockDetail, BlockSummary, BlockchainInfo, ChainReader, MempoolEntry,
+    NodeDiagnostics, PriceOracle, SubtreeRoots, TransactionDetail, Treestate, UnifiedReceivers,
 };
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 /// How many recent blocks the TUI lists.
@@ -104,9 +106,32 @@ pub struct AppState {
     subtree_roots: Option<Result<SubtreeRoots, String>>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<beazt_domain::NodeStatus>,
+    /// A cached ZEC/USD price source, when the composition root opted into
+    /// one via [`AppState::set_price_oracle`]. `None` by default — every
+    /// amount still renders in zatoshis/ZEC either way.
+    prices: Option<Arc<dyn PriceOracle>>,
+    /// When the screen's current data (or error) was last actually
+    /// fetched, formatted for display. Set at the end of every
+    /// lookup/refresh, success or failure alike — it reflects freshness,
+    /// not success.
+    last_fetched: Option<String>,
 }
 
 impl AppState {
+    /// Opts into a price source — composition roots call this once at
+    /// startup, the same way they inject a concrete `ChainReader`. Never
+    /// required: an `AppState` with no price source set still renders
+    /// every amount in zatoshis/ZEC.
+    pub fn set_price_oracle(&mut self, prices: Arc<dyn PriceOracle>) {
+        self.prices = Some(prices);
+    }
+
+    /// Stamps [`Self::last_fetched`] with the current time — called at the
+    /// end of every lookup/refresh below, success or failure alike.
+    fn stamp_last_fetched(&mut self) {
+        self.last_fetched = Some(format_timestamp(now_unix()));
+    }
+
     /// Refresh the home screen's state from a live read through `reader` —
     /// never a cached or locally re-derived value. Does nothing to the
     /// transaction screen's state; that's refreshed by `lookup_transaction`
@@ -127,6 +152,7 @@ impl AppState {
         // an unready node is routine (no validator behind a fresh deploy,
         // say), not the same class of failure as a height/block RPC error.
         self.node_status = reader.node_status().await.ok();
+        self.stamp_last_fetched();
     }
 
     /// Enter txid-input mode, starting from an empty buffer.
@@ -206,6 +232,7 @@ impl AppState {
                 self.screen = Screen::Transaction(txid, Err(e.to_string()));
             }
         }
+        self.stamp_last_fetched();
     }
 
     /// Look up the address currently in the input buffer. Does nothing if
@@ -248,6 +275,7 @@ impl AppState {
                 self.screen = Screen::Address(address, Err(e.to_string()));
             }
         }
+        self.stamp_last_fetched();
     }
 
     /// Look up the block currently in the input buffer, by height or hash.
@@ -272,6 +300,7 @@ impl AppState {
                 self.screen = Screen::Block(id, Err(e.to_string()));
             }
         }
+        self.stamp_last_fetched();
     }
 
     /// Look up the shielded commitment-tree state of the block currently
@@ -292,6 +321,7 @@ impl AppState {
                 self.screen = Screen::Treestate(id, Err(e.to_string()));
             }
         }
+        self.stamp_last_fetched();
     }
 
     /// Look up the mempool's current contents. Unlike every other lookup,
@@ -308,6 +338,7 @@ impl AppState {
                 self.screen = Screen::Mempool(Err(e.to_string()));
             }
         }
+        self.stamp_last_fetched();
     }
 
     /// Look up richer node diagnostics. Like the mempool, there's nothing
@@ -327,6 +358,7 @@ impl AppState {
                 self.screen = Screen::NodeInfo(Err(e.to_string()));
             }
         }
+        self.stamp_last_fetched();
     }
 
     /// Look up the Sapling pool's subtree roots from index 0. Does
@@ -345,6 +377,51 @@ impl AppState {
                 self.screen = Screen::SubtreeRoots("sapling".to_string(), Err(e.to_string()));
             }
         }
+        self.stamp_last_fetched();
+    }
+}
+
+/// The current Unix time, in seconds — used only for the "last updated"
+/// stamp. A render-time clock read, not a chain read, so a clock that
+/// can't report the current time falls back to `0` rather than failing
+/// anything over a footer.
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Formats a zatoshi amount as "`<grouped> zat (<zec> ZEC[, <usd>])`" —
+/// mirrors `beazt-web`'s identical helper; duplicated rather than shared
+/// since each driving adapter owns its own rendering. The grouped zatoshi
+/// figure is primary and always shown; the ZEC/USD conversions are
+/// best-effort cosmetic additions that silently degrade (never panic) if
+/// the amount doesn't fit `i64` or no price is currently cached.
+fn amount(
+    zat: impl TryInto<i64> + std::fmt::Display + Copy,
+    prices: Option<&Arc<dyn PriceOracle>>,
+) -> String {
+    let grouped = group_thousands(zat);
+    let Ok(signed) = zat.try_into() else {
+        return format!("{grouped} zat");
+    };
+    match prices.and_then(|p| p.zec_usd()) {
+        Some(price) => format!(
+            "{grouped} zat ({}, {})",
+            format_zec(signed),
+            format_usd(signed, price)
+        ),
+        None => format!("{grouped} zat ({})", format_zec(signed)),
+    }
+}
+
+/// The "last updated" line shown on every screen, or an empty string
+/// before the first lookup/refresh has completed.
+fn last_updated_line(state: &AppState) -> String {
+    match &state.last_fetched {
+        Some(ts) => format!("Last updated: {ts}"),
+        None => String::new(),
     }
 }
 
@@ -453,14 +530,15 @@ fn render_home(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
     let [status_area, blocks_area] = Layout::new(
         Direction::Vertical,
-        [Constraint::Length(4), Constraint::Min(0)],
+        [Constraint::Length(5), Constraint::Min(0)],
     )
     .areas(area);
 
     let mut status_text = match (state.height, &state.error) {
         (Some(height), _) => {
             format!(
-                "Chain height: {height}  (t: tx, a: address, b: block, m: mempool, n: node info, q: quit)"
+                "Chain height: {}  (t: tx, a: address, b: block, m: mempool, n: node info, q: quit)",
+                group_thousands(height)
             )
         }
         (None, Some(err)) => format!("RPC error: {err}  (q to quit)"),
@@ -472,14 +550,18 @@ fn render_home(frame: &mut Frame, state: &AppState) {
             "Connected validator: {} (build {}) — {} peers — mempool: {} tx, {} bytes",
             status.subversion,
             status.build,
-            status.connections,
-            status.mempool_size,
-            status.mempool_bytes
+            group_thousands(status.connections),
+            group_thousands(status.mempool_size),
+            group_thousands(status.mempool_bytes)
         ),
         None => "Node status unavailable".to_string(),
     });
+    status_text.push('\n');
+    status_text.push_str(&last_updated_line(state));
     frame.render_widget(
-        Paragraph::new(style_lines(&status_text)).block(styled_block("beazt")),
+        Paragraph::new(style_lines(&status_text))
+            .block(styled_block("beazt"))
+            .wrap(Wrap { trim: false }),
         status_area,
     );
 
@@ -488,10 +570,12 @@ fn render_home(frame: &mut Frame, state: &AppState) {
         .iter()
         .map(|block| {
             ListItem::new(Line::from(vec![
-                Span::styled(block.height.to_string(), Style::new().fg(ACCENT)),
+                Span::styled(group_thousands(block.height), Style::new().fg(ACCENT)),
                 Span::raw(format!(
                     "  {}  {}  {} tx",
-                    block.hash, block.time, block.tx_count
+                    block.hash,
+                    format_timestamp(block.time.into()),
+                    block.tx_count
                 )),
             ]))
         })
@@ -504,7 +588,9 @@ fn render_home(frame: &mut Frame, state: &AppState) {
 
 fn render_input(frame: &mut Frame, buffer: &str, title: &str) {
     frame.render_widget(
-        Paragraph::new(format!("{buffer}_")).block(styled_block(title)),
+        Paragraph::new(format!("{buffer}_"))
+            .block(styled_block(title))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -523,13 +609,13 @@ fn render_transaction(
             };
             let mut lines = vec![
                 format!("Transaction {}", tx.txid),
-                format!("Size: {} bytes", tx.size),
+                format!("Size: {} bytes", group_thousands(tx.size)),
             ];
             if let Some(height) = tx.height {
-                lines.push(format!("Block height: {height}"));
+                lines.push(format!("Block height: {}", group_thousands(height)));
             }
             if let Some(confirmations) = tx.confirmations {
-                lines.push(format!("Confirmations: {confirmations}"));
+                lines.push(format!("Confirmations: {}", group_thousands(confirmations)));
             }
             lines.push(String::new());
             lines.push("Outputs:".to_string());
@@ -539,15 +625,21 @@ fn render_transaction(
                 } else {
                     format!(" — {}", output.addresses.join(", "))
                 };
-                lines.push(format!("  {} zat{addresses} — {status}", output.value_zat));
+                lines.push(format!(
+                    "  {}{addresses} — {status}",
+                    amount(output.value_zat, state.prices.as_ref())
+                ));
             }
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
-        Paragraph::new(style_lines(&text)).block(styled_block("Transaction")),
+        Paragraph::new(style_lines(&text))
+            .block(styled_block("Transaction"))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -616,8 +708,14 @@ fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>,
             if let Some(receivers) = format_receivers(&state.receivers) {
                 lines.push(receivers);
             }
-            lines.push(format!("Balance: {} zat", summary.balance_zat));
-            lines.push(format!("Lifetime received: {} zat", summary.received_zat));
+            lines.push(format!(
+                "Balance: {}",
+                amount(summary.balance_zat, state.prices.as_ref())
+            ));
+            lines.push(format!(
+                "Lifetime received: {}",
+                amount(summary.received_zat, state.prices.as_ref())
+            ));
             lines.push(String::new());
             lines.push("Transactions:".to_string());
             for txid in &summary.txids {
@@ -630,8 +728,11 @@ fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>,
             } else {
                 for utxo in &summary.utxos {
                     lines.push(format!(
-                        "  {}:{}  {} zat  height {}",
-                        utxo.txid, utxo.output_index, utxo.value_zat, utxo.height
+                        "  {}:{}  {}  height {}",
+                        utxo.txid,
+                        utxo.output_index,
+                        amount(utxo.value_zat, state.prices.as_ref()),
+                        group_thousands(utxo.height)
                     ));
                 }
             }
@@ -642,18 +743,23 @@ fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>,
             } else {
                 for delta in &summary.deltas {
                     lines.push(format!(
-                        "  {}  {} zat  height {}",
-                        delta.txid, delta.value_zat, delta.height
+                        "  {}  {}  height {}",
+                        delta.txid,
+                        amount(delta.value_zat, state.prices.as_ref()),
+                        group_thousands(delta.height)
                     ));
                 }
             }
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
-        Paragraph::new(style_lines(&text)).block(styled_block("Address")),
+        Paragraph::new(style_lines(&text))
+            .block(styled_block("Address"))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -666,9 +772,9 @@ fn render_block(frame: &mut Frame, id: &str, result: &Result<(), String>, state:
                 return;
             };
             let mut lines = vec![
-                format!("Block {}", detail.height),
+                format!("Block {}", group_thousands(detail.height)),
                 format!("Hash: {}", detail.hash),
-                format!("Time: {}", detail.time),
+                format!("Time: {}", format_timestamp(detail.time.into())),
                 String::new(),
                 "Transactions:".to_string(),
             ];
@@ -687,19 +793,25 @@ fn render_block(frame: &mut Frame, id: &str, result: &Result<(), String>, state:
                                 .as_deref()
                                 .map(|a| format!(" — {a}"))
                                 .unwrap_or_default();
-                            lines.push(format!("    {} zat{address}", movement.value_zat));
+                            lines.push(format!(
+                                "    {}{address}",
+                                amount(movement.value_zat, state.prices.as_ref())
+                            ));
                         }
                     }
                 }
                 None => lines.push("  unavailable".to_string()),
             }
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(s: treestate, Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
-        Paragraph::new(style_lines(&text)).block(styled_block("Block")),
+        Paragraph::new(style_lines(&text))
+            .block(styled_block("Block"))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -712,9 +824,9 @@ fn render_treestate(frame: &mut Frame, id: &str, result: &Result<(), String>, st
                 return;
             };
             let mut lines = vec![
-                format!("Treestate for block {}", treestate.height),
+                format!("Treestate for block {}", group_thousands(treestate.height)),
                 format!("Hash: {}", treestate.hash),
-                format!("Time: {}", treestate.time),
+                format!("Time: {}", format_timestamp(treestate.time.into())),
                 String::new(),
             ];
             for (pool, tree) in [
@@ -736,12 +848,15 @@ fn render_treestate(frame: &mut Frame, id: &str, result: &Result<(), String>, st
                 }
             }
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(r: sapling subtree roots, Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
-        Paragraph::new(style_lines(&text)).block(styled_block("Treestate")),
+        Paragraph::new(style_lines(&text))
+            .block(styled_block("Treestate"))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -771,17 +886,21 @@ fn render_subtree_roots(
                 for root in &roots.roots {
                     lines.push(format!(
                         "  {}  completed at height {}",
-                        root.root, root.end_height
+                        root.root,
+                        group_thousands(root.end_height)
                     ));
                 }
             }
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
-        Paragraph::new(style_lines(&text)).block(styled_block("Subtree roots")),
+        Paragraph::new(style_lines(&text))
+            .block(styled_block("Subtree roots"))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -797,20 +916,26 @@ fn render_mempool(frame: &mut Frame, result: &Result<(), String>, state: &AppSta
             for entry in &state.mempool {
                 let time = entry
                     .time
-                    .map(|t| format!(" — entered at {t}"))
+                    .map(|t| format!(" — entered at {}", format_timestamp(t)))
                     .unwrap_or_default();
                 lines.push(format!(
-                    "{}  {} bytes  {} zat fee  height {}{time}",
-                    entry.txid, entry.size, entry.fee_zat, entry.height
+                    "{}  {} bytes  {} fee  height {}{time}",
+                    entry.txid,
+                    group_thousands(entry.size),
+                    amount(entry.fee_zat, state.prices.as_ref()),
+                    group_thousands(entry.height)
                 ));
             }
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
-        Paragraph::new(style_lines(&text)).block(styled_block("Mempool")),
+        Paragraph::new(style_lines(&text))
+            .block(styled_block("Mempool"))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -825,7 +950,8 @@ fn format_blockchain_info(info: &Option<BlockchainInfo>) -> Vec<String> {
             lines.push(format!("  Chain: {}", info.chain));
             lines.push(format!(
                 "  Blocks: {} — headers: {}",
-                info.blocks, info.headers
+                group_thousands(info.blocks),
+                group_thousands(info.headers)
             ));
             lines.push(format!("  Best block: {}", info.best_block_hash));
             lines.push(format!("  Difficulty: {}", info.difficulty));
@@ -835,7 +961,7 @@ fn format_blockchain_info(info: &Option<BlockchainInfo>) -> Vec<String> {
             ));
             lines.push(format!(
                 "  Estimated network height: {}",
-                info.estimated_height
+                group_thousands(info.estimated_height)
             ));
         }
         None => lines.push("  unavailable".to_string()),
@@ -862,6 +988,7 @@ fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppS
             lines.extend(format_blockchain_info(&state.blockchain_info));
             lines.push(format!("RPC error: {e}"));
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(Esc: back)".to_string());
             lines.join("\n")
         }
@@ -879,7 +1006,10 @@ fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppS
                         lines.push(format!("  Difficulty: {difficulty}"));
                     }
                     if let Some(sol_ps) = mining.network_sol_ps {
-                        lines.push(format!("  Network solution rate: {sol_ps} sol/s"));
+                        lines.push(format!(
+                            "  Network solution rate: {} sol/s",
+                            group_thousands(sol_ps)
+                        ));
                     }
                 }
                 None => lines.push("  unavailable on this deployment".to_string()),
@@ -888,7 +1018,10 @@ fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppS
             lines.push("Network:".to_string());
             match &diagnostics.network {
                 Some(network) => {
-                    lines.push(format!("  Protocol version: {}", network.protocol_version));
+                    lines.push(format!(
+                        "  Protocol version: {}",
+                        group_thousands(network.protocol_version)
+                    ));
                     lines.push(format!("  Local services: {}", network.local_services));
                     lines.push(format!("  Relay fee: {} ZEC", network.relay_fee));
                     if !network.warnings.is_empty() {
@@ -908,12 +1041,15 @@ fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppS
                 }
             }
             lines.push(String::new());
+            lines.push(last_updated_line(state));
             lines.push("(Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
-        Paragraph::new(style_lines(&text)).block(styled_block("Node info")),
+        Paragraph::new(style_lines(&text))
+            .block(styled_block("Node info"))
+            .wrap(Wrap { trim: false }),
         frame.area(),
     );
 }
@@ -1165,10 +1301,12 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(content.contains("t1spent"), "{content}");
-        assert!(
-            content.contains(&format!("spent by {}", "cd".repeat(32))),
-            "{content}"
-        );
+        // Two separate checks, not one compound string: word-wrap (needed
+        // so a long amount+address line degrades to wrapping rather than
+        // silently clipping) can legitimately put "spent by" and the long
+        // hash that follows it on different rendered rows.
+        assert!(content.contains("spent by"), "{content}");
+        assert!(content.contains(&"cd".repeat(32)), "{content}");
         assert!(content.contains("t1unspent"), "{content}");
         assert!(content.contains("unspent — 2000 zat"), "{content}");
     }
@@ -1250,8 +1388,8 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(content.contains("t1example"), "{content}");
-        assert!(content.contains("5000"), "{content}");
-        assert!(content.contains("10000"), "{content}");
+        assert!(content.contains("5,000"), "{content}");
+        assert!(content.contains("10,000"), "{content}");
         assert!(content.contains(&"ab".repeat(32)), "{content}");
         assert!(
             content.contains("none (or unavailable on this deployment)"),
@@ -1495,7 +1633,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(content.contains("-1000 zat"), "{content}");
+        assert!(content.contains("-1,000 zat"), "{content}");
         assert!(content.contains("t1spender"), "{content}");
         assert!(content.contains("600 zat"), "{content}");
         assert!(content.contains("t1receiver"), "{content}");
@@ -1599,7 +1737,7 @@ mod tests {
             .collect();
         assert!(content.contains(&"ab".repeat(32)), "{content}");
         assert!(content.contains("250 bytes"), "{content}");
-        assert!(content.contains("1000 zat fee"), "{content}");
+        assert!(content.contains("1,000 zat"), "{content}");
         assert!(content.contains("height 300"), "{content}");
     }
 

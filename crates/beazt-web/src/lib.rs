@@ -7,17 +7,34 @@
 //! `src/bin/web.rs` alone.
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::extract::{Path, State};
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
-use beazt_domain::ChainReader;
+use beazt_domain::{
+    format_timestamp, format_usd, format_zec, group_thousands, truncate_hash, ChainReader,
+    PriceOracle,
+};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
+
+/// The state every route reads from: the one [`ChainReader`] and the one
+/// (optionally no-op) [`PriceOracle`], bundled so axum's `State` extractor
+/// hands both to a route in one shot.
+#[derive(Clone)]
+struct AppState<C: ChainReader> {
+    reader: C,
+    prices: Arc<dyn PriceOracle>,
+}
 
 /// The explorer's web router: every route is a live read through `reader`,
 /// never a cached or locally re-derived value — that's the whole point of a
-/// dogfood client.
-pub fn build_app<C: ChainReader>(reader: C) -> Router {
+/// dogfood client. `prices` is injected the same way, but is never required
+/// — every amount still renders in zatoshis/ZEC when no price is cached.
+pub fn build_app<C: ChainReader>(reader: C, prices: Arc<dyn PriceOracle>) -> Router {
+    let state = AppState { reader, prices };
     Router::new()
         .route("/", get(home::<C>))
         .route("/block/:id", get(block::<C>))
@@ -27,7 +44,7 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
         .route("/subtrees/:pool/:start_index", get(subtree_roots::<C>))
         .route("/tx/:txid", get(transaction::<C>))
         .route("/address/:address", get(address::<C>))
-        .with_state(reader)
+        .with_state(state)
 }
 
 /// How many recent blocks the home page lists.
@@ -35,7 +52,8 @@ const RECENT_BLOCKS: u32 = 10;
 
 /// Pico's classless theme (vendored, not fetched at request time — this
 /// stays a single self-contained binary with no runtime network
-/// dependency beyond the one RPC URL). It styles bare semantic elements
+/// dependency beyond the one RPC URL, and — for whoever's composition root
+/// opts into one — one price source). It styles bare semantic elements
 /// (`nav`, `table`, `h1`/`h2`, `a`, ...) directly, which is why every
 /// route below renders plain tags with only a handful of extra classes.
 const PICO_CSS: &str = include_str!("../assets/pico.classless.min.css");
@@ -49,10 +67,48 @@ p.ok { color: var(--pico-ins-color); }
 p.empty, span.empty { color: var(--pico-muted-color); }
 .hash { font-family: var(--pico-font-family-monospace, monospace); word-break: break-all; }
 nav a[href="/"] { font-weight: bold; }
+footer.updated { color: var(--pico-muted-color); font-size: 0.85rem; margin-top: 2rem; }
 "#;
 
-/// Wraps route content in the shared page shell: doctype, nav, and the
-/// embedded stylesheet. Every route's rendered markup passes through here.
+/// The current Unix time, in seconds — used only for the "last updated"
+/// footer. A render-time clock read, not a chain read, so it has no
+/// `ChainReadError` path: a clock that can't report the current time is a
+/// host-level problem this page can't meaningfully recover from, so it
+/// falls back to `0` rather than failing the whole page over a footer.
+fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Renders a zatoshi amount as "`<grouped> zat (<zec> ZEC[, <usd>])`" — the
+/// grouped zatoshi figure is primary and always shown; the ZEC/USD
+/// conversions are best-effort cosmetic additions that silently degrade
+/// (never panic or hide the primary figure) if the amount doesn't fit
+/// `i64` or no price is currently cached.
+fn amount(
+    zat: impl TryInto<i64> + std::fmt::Display + Copy,
+    prices: &Arc<dyn PriceOracle>,
+) -> Markup {
+    let grouped = group_thousands(zat);
+    let signed: Option<i64> = zat.try_into().ok();
+    html! {
+        (grouped) " zat"
+        @if let Some(signed) = signed {
+            " (" (format_zec(signed))
+            @if let Some(price) = prices.zec_usd() {
+                ", " (format_usd(signed, price))
+            }
+            ")"
+        }
+    }
+}
+
+/// Wraps route content in the shared page shell: doctype, nav, the
+/// embedded stylesheet, and a "last updated" footer (every route is a live
+/// read, so this is simply the render time). Every route's rendered markup
+/// passes through here.
 fn layout(title: &str, content: Markup) -> Html<String> {
     let markup = html! {
         (DOCTYPE)
@@ -74,6 +130,7 @@ fn layout(title: &str, content: Markup) -> Html<String> {
                     }
                 }
                 main { (content) }
+                footer.updated { "Last updated: " (format_timestamp(now_unix())) }
             }
         }
     };
@@ -82,7 +139,8 @@ fn layout(title: &str, content: Markup) -> Html<String> {
 
 /// `GET /`: the chain height, node/mempool status, and a recent-blocks
 /// list, all fetched live and rendered independently of each other.
-async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
+async fn home<C: ChainReader>(State(state): State<AppState<C>>) -> Html<String> {
+    let reader = state.reader;
     let height = reader.chain_height().await;
     let blocks = reader.recent_blocks(RECENT_BLOCKS).await;
     let status = reader.node_status().await;
@@ -90,15 +148,15 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
     let content = html! {
         h1 { "Chain" }
         @match height {
-            Ok(height) => p { "Chain height: " strong { (height) } },
+            Ok(height) => p { "Chain height: " strong { (group_thousands(height)) } },
             Err(e) => p.error { "RPC error: " (e.to_string()) },
         }
         @match status {
             Ok(status) => p {
                 "Connected validator: " (status.subversion) " (build " (status.build) ") — "
-                (status.connections) " peers — "
+                (group_thousands(status.connections)) " peers — "
                 a href="/mempool" { "mempool" } ": "
-                (status.mempool_size) " tx, " (status.mempool_bytes) " bytes"
+                (group_thousands(status.mempool_size)) " tx, " (group_thousands(status.mempool_bytes)) " bytes"
                 " — " a href="/node" { "node info" }
             },
             Err(e) => p.error { "Node status unavailable: " (e.to_string()) },
@@ -110,9 +168,9 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
                 tbody {
                     @for block in &blocks {
                         tr {
-                            td { a href=(format!("/block/{}", block.height)) { (block.height) } }
-                            td.hash { (block.hash) }
-                            td { (block.time) }
+                            td { a href=(format!("/block/{}", block.height)) { (group_thousands(block.height)) } }
+                            td.hash title=(block.hash) { (truncate_hash(&block.hash)) }
+                            td { (format_timestamp(block.time.into())) }
                             td { (block.tx_count) }
                         }
                     }
@@ -131,15 +189,19 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
 /// read is by the block's resolved hash (`getblockdeltas` takes no height
 /// form) and renders independently of the transaction list, so a failure
 /// there doesn't hide the rest of the page.
-async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) -> Html<String> {
+async fn block<C: ChainReader>(
+    State(state): State<AppState<C>>,
+    Path(id): Path<String>,
+) -> Html<String> {
+    let AppState { reader, prices } = state;
     let content = match reader.block(id.clone()).await {
         Ok(detail) => {
             let deltas = reader.block_deltas(detail.hash.clone()).await;
             html! {
-                h1 { "Block " (detail.height) }
+                h1 { "Block " (group_thousands(detail.height)) }
                 article {
                     p { "Hash: " span.hash { (detail.hash) } }
-                    p { "Time: " (detail.time) }
+                    p { "Time: " (format_timestamp(detail.time.into())) }
                     p { a href=(format!("/block/{id}/treestate")) { "Treestate" } }
                 }
                 h2 { "Transactions" }
@@ -147,7 +209,7 @@ async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) 
                     thead { tr { th { "Tx ID" } } }
                     tbody {
                         @for txid in &detail.tx_ids {
-                            tr { td.hash { a href=(format!("/tx/{txid}")) { (txid) } } }
+                            tr { td.hash title=(txid) { a href=(format!("/tx/{txid}")) { (truncate_hash(txid)) } } }
                         }
                     }
                 }
@@ -159,8 +221,8 @@ async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) 
                             @for delta in &block_deltas.deltas {
                                 @for movement in delta.inputs.iter().chain(delta.outputs.iter()) {
                                     tr {
-                                        td.hash { a href=(format!("/tx/{}", delta.txid)) { (delta.txid) } }
-                                        td { (movement.value_zat) " zat" }
+                                        td.hash title=(delta.txid) { a href=(format!("/tx/{}", delta.txid)) { (truncate_hash(&delta.txid)) } }
+                                        td { (amount(movement.value_zat, &prices)) }
                                         td {
                                             @if let Some(address) = &movement.address {
                                                 (address)
@@ -191,14 +253,15 @@ async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) 
 /// from the block page; kept as its own route rather than folded into it
 /// so a large tree doesn't bloat every block-page load.
 async fn treestate<C: ChainReader>(
-    State(reader): State<C>,
+    State(state): State<AppState<C>>,
     Path(id): Path<String>,
 ) -> Html<String> {
+    let reader = state.reader;
     let content = match reader.treestate(id.clone()).await {
         Ok(state) => html! {
-            h1 { "Treestate for block " (state.height) }
+            h1 { "Treestate for block " (group_thousands(state.height)) }
             p { "Hash: " span.hash { (state.hash) } }
-            p { "Time: " (state.time) }
+            p { "Time: " (format_timestamp(state.time.into())) }
             @for (label, pool, tree) in [
                 ("Sapling", "sapling", &state.sapling),
                 ("Orchard", "orchard", &state.orchard),
@@ -232,9 +295,10 @@ async fn treestate<C: ChainReader>(
 /// the end of the pool's completed subtrees renders an empty list, not
 /// an error.
 async fn subtree_roots<C: ChainReader>(
-    State(reader): State<C>,
+    State(state): State<AppState<C>>,
     Path((pool, start_index)): Path<(String, u16)>,
 ) -> Html<String> {
+    let reader = state.reader;
     let content = match reader.subtree_roots(pool.clone(), start_index).await {
         Ok(roots) => html! {
             h1 { "Subtree roots — " (roots.pool) " from index " (roots.start_index) }
@@ -245,7 +309,7 @@ async fn subtree_roots<C: ChainReader>(
                     thead { tr { th { "Root" } th { "Completed at height" } } }
                     tbody {
                         @for root in &roots.roots {
-                            tr { td.hash { (root.root) } td { (root.end_height) } }
+                            tr { td.hash { (root.root) } td { (group_thousands(root.end_height)) } }
                         }
                     }
                 }
@@ -261,6 +325,9 @@ async fn subtree_roots<C: ChainReader>(
 
 /// Truncates a long hex string for display, noting its full length — a
 /// serialized commitment tree can be large and isn't meant to be read raw.
+/// Distinct from [`truncate_hash`]: this previews a large blob (with a
+/// length note), that shortens a fixed-length hash for a list row (with
+/// the full value kept in an `href`/`title`).
 fn truncate_hex(hex: &str) -> String {
     const PREVIEW_LEN: usize = 64;
     if hex.len() <= PREVIEW_LEN {
@@ -272,9 +339,10 @@ fn truncate_hex(hex: &str) -> String {
 /// `GET /tx/{txid}`: one transaction's detail, fetched live. Linked from a
 /// block's transaction list and from an address's transaction history.
 async fn transaction<C: ChainReader>(
-    State(reader): State<C>,
+    State(state): State<AppState<C>>,
     Path(txid): Path<String>,
 ) -> Html<String> {
+    let AppState { reader, prices } = state;
     let content = match reader.transaction(txid.clone()).await {
         Ok(tx) => {
             let mut statuses = Vec::with_capacity(tx.outputs.len());
@@ -286,12 +354,12 @@ async fn transaction<C: ChainReader>(
             html! {
                 h1 { "Transaction " span.hash { (tx.txid) } }
                 article {
-                    p { "Size: " (tx.size) " bytes" }
+                    p { "Size: " (group_thousands(tx.size)) " bytes" }
                     @if let Some(height) = tx.height {
-                        p { "Block height: " (height) }
+                        p { "Block height: " (group_thousands(height)) }
                     }
                     @if let Some(confirmations) = tx.confirmations {
-                        p { "Confirmations: " (confirmations) }
+                        p { "Confirmations: " (group_thousands(confirmations)) }
                     }
                 }
                 h2 { "Outputs" }
@@ -300,7 +368,7 @@ async fn transaction<C: ChainReader>(
                     tbody {
                         @for (output, status) in tx.outputs.iter().zip(statuses.iter()) {
                             tr {
-                                td { (output.value_zat) " zat" }
+                                td { (amount(output.value_zat, &prices)) }
                                 td {
                                     @if output.addresses.is_empty() {
                                         span.empty { "—" }
@@ -347,9 +415,10 @@ async fn describe_output_status<C: ChainReader>(reader: &C, txid: &str, index: u
 /// transaction history, fetched live. Not yet linked from anywhere — the
 /// explorer has no search form yet, so this is reachable only by direct URL.
 async fn address<C: ChainReader>(
-    State(reader): State<C>,
+    State(state): State<AppState<C>>,
     Path(address): Path<String>,
 ) -> Html<String> {
+    let AppState { reader, prices } = state;
     // Validity is independent of the balance/txids/utxos/deltas reads
     // below — useful even for a shielded or unified address those reads
     // can't answer, and worth showing even if they fail.
@@ -395,8 +464,8 @@ async fn address<C: ChainReader>(
             (validity_line)
             (receivers_section)
             article {
-                p { "Balance: " (summary.balance_zat) " zat" }
-                p { "Lifetime received: " (summary.received_zat) " zat" }
+                p { "Balance: " (amount(summary.balance_zat, &prices)) }
+                p { "Lifetime received: " (amount(summary.received_zat, &prices)) }
             }
             h2 { "Transactions" }
             @if summary.txids.is_empty() {
@@ -405,7 +474,7 @@ async fn address<C: ChainReader>(
                 table {
                     tbody {
                         @for txid in &summary.txids {
-                            tr { td.hash { a href=(format!("/tx/{txid}")) { (txid) } } }
+                            tr { td.hash title=(txid) { a href=(format!("/tx/{txid}")) { (truncate_hash(txid)) } } }
                         }
                     }
                 }
@@ -419,10 +488,10 @@ async fn address<C: ChainReader>(
                     tbody {
                         @for utxo in &summary.utxos {
                             tr {
-                                td.hash { a href=(format!("/tx/{}", utxo.txid)) { (utxo.txid) } }
+                                td.hash title=(utxo.txid) { a href=(format!("/tx/{}", utxo.txid)) { (truncate_hash(&utxo.txid)) } }
                                 td { (utxo.output_index) }
-                                td { (utxo.value_zat) " zat" }
-                                td { (utxo.height) }
+                                td { (amount(utxo.value_zat, &prices)) }
+                                td { (group_thousands(utxo.height)) }
                             }
                         }
                     }
@@ -437,9 +506,9 @@ async fn address<C: ChainReader>(
                     tbody {
                         @for delta in &summary.deltas {
                             tr {
-                                td.hash { a href=(format!("/tx/{}", delta.txid)) { (delta.txid) } }
-                                td { (delta.value_zat) " zat" }
-                                td { (delta.height) }
+                                td.hash title=(delta.txid) { a href=(format!("/tx/{}", delta.txid)) { (truncate_hash(&delta.txid)) } }
+                                td { (amount(delta.value_zat, &prices)) }
+                                td { (group_thousands(delta.height)) }
                             }
                         }
                     }
@@ -459,7 +528,8 @@ async fn address<C: ChainReader>(
 /// `GET /mempool`: every transaction currently in the mempool, with its
 /// size, fee, and the tip height it was validated against. Linked from the
 /// home page's status line.
-async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
+async fn mempool<C: ChainReader>(State(state): State<AppState<C>>) -> Html<String> {
+    let AppState { reader, prices } = state;
     let content = match reader.raw_mempool().await {
         Ok(entries) => html! {
             h1 { "Mempool" }
@@ -472,13 +542,13 @@ async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
                     tbody {
                         @for entry in &entries {
                             tr {
-                                td.hash { a href=(format!("/tx/{}", entry.txid)) { (entry.txid) } }
-                                td { (entry.size) " bytes" }
-                                td { (entry.fee_zat) " zat" }
-                                td { (entry.height) }
+                                td.hash title=(entry.txid) { a href=(format!("/tx/{}", entry.txid)) { (truncate_hash(&entry.txid)) } }
+                                td { (group_thousands(entry.size)) " bytes" }
+                                td { (amount(entry.fee_zat, &prices)) }
+                                td { (group_thousands(entry.height)) }
                                 td {
                                     @if let Some(time) = entry.time {
-                                        (time)
+                                        (format_timestamp(time))
                                     } @else {
                                         span.empty { "—" }
                                     }
@@ -500,7 +570,8 @@ async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
 /// `GET /node`: richer node diagnostics than the home page's compact status
 /// line — mining/network facts and every connected peer. Linked from the
 /// home page's status line.
-async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
+async fn node<C: ChainReader>(State(state): State<AppState<C>>) -> Html<String> {
+    let reader = state.reader;
     // Both independent of node_diagnostics below — their own failure
     // doesn't hide mining/network/peer facts that answered.
     let blockchain = reader.blockchain_info().await;
@@ -520,12 +591,12 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         @match &blockchain {
             Ok(info) => article {
                 p { "Chain: " (info.chain) }
-                p { "Blocks: " (info.blocks) " — headers: " (info.headers) }
+                p { "Blocks: " (group_thousands(info.blocks)) " — headers: " (group_thousands(info.headers)) }
                 p { "Best block: " span.hash { (info.best_block_hash) } }
                 p { "Difficulty: " (info.difficulty) }
                 p { "Verification progress: " (info.verification_progress) }
-                p { "Size on disk: " (info.size_on_disk) " bytes" }
-                p { "Estimated network height: " (info.estimated_height) }
+                p { "Size on disk: " (group_thousands(info.size_on_disk)) " bytes" }
+                p { "Estimated network height: " (group_thousands(info.estimated_height)) }
             },
             Err(e) => p.error { "RPC error: " (e.to_string()) },
         }
@@ -542,7 +613,7 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
                         p { "Difficulty: " (difficulty) }
                     }
                     @if let Some(sol_ps) = mining.network_sol_ps {
-                        p { "Network solution rate: " (sol_ps) " sol/s" }
+                        p { "Network solution rate: " (group_thousands(sol_ps)) " sol/s" }
                     }
                 },
                 None => p.empty { "Unavailable on this deployment" },
@@ -550,7 +621,7 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
             h2 { "Network" }
             @match &diagnostics.network {
                 Some(network) => article {
-                    p { "Protocol version: " (network.protocol_version) }
+                    p { "Protocol version: " (group_thousands(network.protocol_version)) }
                     p { "Local services: " (network.local_services) }
                     p { "Relay fee: " (network.relay_fee) " ZEC" }
                     @if !network.warnings.is_empty() {
@@ -587,10 +658,12 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
 
 #[cfg(test)]
 mod tests {
+    use beazt_domain::NullPriceOracle;
     use beazt_zaino_client::ZainoClient;
     use http_body_util::BodyExt;
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
+    use std::sync::Arc;
     use tower::ServiceExt;
     use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
     use zaino_service::testing::{MockChain, MockIndexerService};
@@ -629,6 +702,14 @@ mod tests {
         }
     }
 
+    /// Every test builds the app with no price source — price rendering is
+    /// cosmetic and purely additive (see `beazt-domain`'s own
+    /// `format_usd`/`format_zec` tests and `beazt-price-client`'s parsing
+    /// tests), so routes here are exercised the same way regardless.
+    fn no_prices() -> Arc<dyn beazt_domain::PriceOracle> {
+        Arc::new(NullPriceOracle)
+    }
+
     /// The home page renders the mock chain's height (291) fetched live
     /// through the generated client — not a cached or hand-rolled value. The
     /// router here is generic over `ChainReader`; this test is what proves
@@ -649,7 +730,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -689,7 +770,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -721,7 +802,9 @@ mod tests {
     /// movements — a negative input and a positive output, each with its
     /// address — alongside the transaction list. The differentiator
     /// capability (`getblockdeltas`) rendering end to end, not just the
-    /// pure-function mapping `beazt-zaino-client` already covers.
+    /// pure-function mapping `beazt-zaino-client` already covers. Values
+    /// render grouped (`beazt-domain::group_thousands`) rather than as raw
+    /// digit runs.
     #[tokio::test(flavor = "multi_thread")]
     async fn block_route_renders_value_movements() {
         use zaino_primitives::types::{
@@ -813,7 +896,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -833,7 +916,7 @@ mod tests {
             .expect("read body")
             .to_bytes();
         let text = String::from_utf8(body.to_vec()).expect("utf8 body");
-        assert!(text.contains("-1000 zat"), "{text}");
+        assert!(text.contains("-1,000 zat"), "{text}");
         assert!(text.contains("600 zat"), "{text}");
         assert!(text.contains("Value movements"), "{text}");
 
@@ -851,7 +934,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -900,7 +983,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -939,7 +1022,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -982,7 +1065,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -1021,7 +1104,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -1061,7 +1144,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -1101,7 +1184,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -1139,7 +1222,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -1175,7 +1258,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let ua = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6\
                   drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666k\
@@ -1207,7 +1290,9 @@ mod tests {
     }
 
     /// `/address/{address}` with scripted UTXOs and deltas renders both
-    /// sections, each entry linked to its transaction.
+    /// sections, each entry linked to its transaction (the full txid lives
+    /// in the row's `href`/`title` even though the visible text is
+    /// shortened via `truncate_hash`).
     #[tokio::test(flavor = "multi_thread")]
     async fn address_route_renders_utxos_and_deltas() {
         use zaino_primitives::types::{
@@ -1242,7 +1327,7 @@ mod tests {
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
-        let app = crate::build_app(ZainoClient::new(client));
+        let app = crate::build_app(ZainoClient::new(client), no_prices());
 
         let response = app
             .oneshot(
@@ -1264,8 +1349,11 @@ mod tests {
         let text = String::from_utf8(body.to_vec()).expect("utf8 body");
         assert!(text.contains("Unspent outputs"), "{text}");
         assert!(text.contains("Value changes"), "{text}");
-        assert!(text.contains(&"04".repeat(32)), "{text}");
-        assert!(text.contains("5000 zat"), "{text}");
+        assert!(
+            text.contains(&"04".repeat(32)),
+            "the full txid survives in the row's href/title: {text}"
+        );
+        assert!(text.contains("5,000 zat"), "{text}");
 
         let _ = handle.stop();
     }

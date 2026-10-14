@@ -1,0 +1,16 @@
+[package]
+name = "beazt-price-client"
+version = "0.1.0"
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+publish = false
+description = "Dogfood block explorer: an optional PriceOracle backed by CoinGecko's free API, for cosmetic USD figures only."
+
+[dependencies]
+beazt-domain = { path = "../beazt-domain" }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
