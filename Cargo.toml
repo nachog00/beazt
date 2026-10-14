@@ -36,6 +36,9 @@ zcash_protocol = "0.10"
 time = { version = "0.3", default-features = false, features = ["std"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 # zaino's own crates (above) depend on this same Zebra fork rather than the
 # public crates.io release - this patch is load-bearing, not optional, and

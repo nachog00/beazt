@@ -11,6 +11,7 @@ description = "Dogfood block explorer: server-rendered web surface, generic over
 
 [dependencies]
 beazt-domain = { path = "../beazt-domain" }
+tracing-subscriber = { workspace = true }
 axum = { workspace = true }
 maud = { workspace = true }
 tokio = { workspace = true }

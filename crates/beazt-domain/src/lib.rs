@@ -491,6 +491,6 @@ pub struct MempoolEntry {
 pub enum ChainReadError {
     /// The RPC call itself failed (network, decode, or an error the node
     /// returned) — the adapter's only failure mode today.
-    #[error("chain read failed")]
+    #[error("chain read failed: {0}")]
     Rpc(#[source] Box<dyn std::error::Error + Send + Sync>),
 }

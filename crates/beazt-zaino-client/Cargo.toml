@@ -14,6 +14,7 @@ beazt-domain = { path = "../beazt-domain" }
 zaino-noderpc = { workspace = true }
 jsonrpsee = { workspace = true, features = ["http-client"] }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 zaino-service = { workspace = true, features = ["testing"] }

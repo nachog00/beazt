@@ -6,7 +6,10 @@
 //! (default `127.0.0.1:3000`) is where this binary listens; `BEAZT_USD_PRICE`
 //! (unset by default) opts into a live CoinGecko-backed ZEC/USD price —
 //! unset, every amount still renders in zatoshis/ZEC, this app's one
-//! external dependency stays just the RPC URL.
+//! external dependency stays just the RPC URL. `RUST_LOG` (default `info`)
+//! controls log verbosity — every RPC failure logs a `warn` event in
+//! `beazt-zaino-client` regardless, so `kubectl logs` shows why a page's
+//! "RPC error" happened, not just that the page rendered one.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +25,13 @@ const PRICE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let rpc_url =
         std::env::var("ZAINO_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8232".to_string());
     let listen_addr =

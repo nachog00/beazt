@@ -4,8 +4,11 @@
 //!
 //! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`) and
 //! `BEAZT_USD_PRICE` (unset by default; opts into a live CoinGecko-backed
-//! ZEC/USD price), same as the web surface. `q` quits from anywhere. On the
-//! home screen: `t` starts a
+//! ZEC/USD price), same as the web surface. `RUST_LOG` (default `info`)
+//! controls log verbosity; logs go to `BEAZT_LOG_DIR`/`beazt-tui.log`
+//! (`BEAZT_LOG_DIR` defaults to `.`), never to stdout/stderr — those are
+//! the terminal's own canvas while the alternate screen is active. `q`
+//! quits from anywhere. On the home screen: `t` starts a
 //! txid lookup, `a` starts an address lookup, `b` starts a block
 //! height/hash lookup, `m` looks up the mempool directly, `n` looks up
 //! node diagnostics directly, and the chain height refreshes every 5s.
@@ -40,6 +43,21 @@ const PRICE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[tokio::main]
 async fn main() {
+    // Never stdout/stderr: that's the alternate screen's own canvas while
+    // the TUI is running, so logging there would corrupt the UI instead
+    // of helping diagnose it.
+    let log_dir = std::env::var("BEAZT_LOG_DIR").unwrap_or_else(|_| ".".to_string());
+    let file_appender = tracing_appender::rolling::never(&log_dir, "beazt-tui.log");
+    let (non_blocking, _log_guard) = tracing_appender::non_blocking(file_appender);
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let rpc_url =
         std::env::var("ZAINO_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8232".to_string());
     let client = HttpClientBuilder::default()

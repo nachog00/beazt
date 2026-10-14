@@ -49,6 +49,30 @@ struct OutputValueOutOfRange;
 #[error("getrawmempool verbose=true returned an unexpected response shape")]
 struct UnexpectedMempoolVerbosity;
 
+/// Logs an RPC failure (at the one place every [`ChainReadError`] in this
+/// adapter originates) before wrapping it, so an operator watching this
+/// process's logs sees why a read failed — not just whoever happens to be
+/// looking at the one page that read landed on. `method` is the JSON-RPC
+/// method name, not this adapter's own method name, so it's grep-able
+/// against zainod's own logs too.
+fn rpc_err<E: std::error::Error + Send + Sync + 'static>(
+    method: &'static str,
+    error: E,
+) -> ChainReadError {
+    tracing::warn!(method, error = %error, "RPC call failed");
+    ChainReadError::Rpc(Box::new(error))
+}
+
+/// Logs an RPC failure that's about to be silently degraded to an empty
+/// default rather than becoming a [`ChainReadError`] — same visibility
+/// goal as [`rpc_err`], for the handful of reads whose own policy is to
+/// degrade rather than fail (not every deployed zainod serves every
+/// indexer-only RPC, and a sibling read's working data shouldn't be
+/// hidden by one that isn't).
+fn log_degraded<E: std::error::Error>(method: &'static str, error: &E) {
+    tracing::warn!(method, error = %error, "RPC call failed, degrading to empty/default");
+}
+
 /// Wraps a [`HttpClient`] built against zaino-noderpc's generated
 /// `NodeRpcApiClient`.
 #[derive(Clone)]
@@ -71,7 +95,7 @@ impl ZainoClient {
             .0
             .block(height.to_string(), Some(1))
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getblock", e))?;
         block_summary_from_response(response)
     }
 }
@@ -87,7 +111,7 @@ fn block_summary_from_response(response: GetBlockResponse) -> Result<BlockSummar
             tx_count: block.n_tx,
         }),
         GetBlockResponse::Raw(_) | GetBlockResponse::Verbose2(_) => {
-            Err(ChainReadError::Rpc(Box::new(UnexpectedBlockVerbosity)))
+            Err(rpc_err("getblock", UnexpectedBlockVerbosity))
         }
     }
 }
@@ -105,7 +129,7 @@ fn block_detail_from_response(response: GetBlockResponse) -> Result<BlockDetail,
             tx_ids: block.tx,
         }),
         GetBlockResponse::Raw(_) | GetBlockResponse::Verbose2(_) => {
-            Err(ChainReadError::Rpc(Box::new(UnexpectedBlockVerbosity)))
+            Err(rpc_err("getblock", UnexpectedBlockVerbosity))
         }
     }
 }
@@ -130,7 +154,7 @@ fn block_deltas_from_response(
                             address: output.address,
                             value_zat,
                         })
-                        .map_err(|_| ChainReadError::Rpc(Box::new(OutputValueOutOfRange)))
+                        .map_err(|_| rpc_err("getblockdeltas", OutputValueOutOfRange))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(TransactionDelta {
@@ -194,9 +218,7 @@ fn raw_mempool_from_response(
                 height: entry.height,
             })
             .collect()),
-        RawMempoolResponse::Txids(_) => {
-            Err(ChainReadError::Rpc(Box::new(UnexpectedMempoolVerbosity)))
-        }
+        RawMempoolResponse::Txids(_) => Err(rpc_err("getrawmempool", UnexpectedMempoolVerbosity)),
     }
 }
 
@@ -302,9 +324,9 @@ fn transaction_detail_from_response(
                 })
                 .collect(),
         }),
-        GetRawTransactionResponse::Raw(_) => Err(ChainReadError::Rpc(Box::new(
-            UnexpectedTransactionVerbosity,
-        ))),
+        GetRawTransactionResponse::Raw(_) => {
+            Err(rpc_err("getrawtransaction", UnexpectedTransactionVerbosity))
+        }
     }
 }
 
@@ -313,7 +335,7 @@ impl ChainReader for ZainoClient {
         self.0
             .block_count()
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))
+            .map_err(|e| rpc_err("getblockcount", e))
     }
 
     async fn recent_blocks(&self, count: u32) -> Result<Vec<BlockSummary>, ChainReadError> {
@@ -331,7 +353,7 @@ impl ChainReader for ZainoClient {
             .0
             .block(height_or_hash, Some(1))
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getblock", e))?;
         block_detail_from_response(response)
     }
 
@@ -340,7 +362,7 @@ impl ChainReader for ZainoClient {
             .0
             .block_deltas(hash)
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getblockdeltas", e))?;
         block_deltas_from_response(response)
     }
 
@@ -349,7 +371,7 @@ impl ChainReader for ZainoClient {
             .0
             .z_treestate(height_or_hash)
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("z_gettreestate", e))?;
         Ok(treestate_from_response(response))
     }
 
@@ -358,7 +380,7 @@ impl ChainReader for ZainoClient {
             .0
             .raw_transaction(txid, Some(1))
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getrawtransaction", e))?;
         transaction_detail_from_response(response)
     }
 
@@ -374,7 +396,7 @@ impl ChainReader for ZainoClient {
                 index: output_index,
             })
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getspentinfo", e))?;
         Ok(SpendInfo {
             spending_txid: response.txid,
             spending_input_index: response.index,
@@ -391,7 +413,7 @@ impl ChainReader for ZainoClient {
             .0
             .tx_out(txid, output_index, Some(true))
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("gettxout", e))?;
         Ok(response.map(|r| OutputStatus {
             value_zat: r.value_zat,
             confirmations: r.confirmations,
@@ -405,7 +427,7 @@ impl ChainReader for ZainoClient {
                 addresses: vec![address.clone()],
             })
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getaddressbalance", e))?;
         // Balance and tx history are independent RPCs, and not every
         // deployed zainod serves both (getaddresstxids is a newer addition
         // than getaddressbalance) — a txids failure degrades to an empty
@@ -419,6 +441,7 @@ impl ChainReader for ZainoClient {
                 end: None,
             })
             .await
+            .inspect_err(|e| log_degraded("getaddresstxids", e))
             .unwrap_or_default();
         // Same degrade-to-empty policy as txids: getaddressutxos and
         // getaddressdeltas are both indexer-only additions, not every
@@ -430,6 +453,7 @@ impl ChainReader for ZainoClient {
                 addresses: vec![address.clone()],
             })
             .await
+            .inspect_err(|e| log_degraded("getaddressutxos", e))
             .map(|entries| entries.into_iter().map(address_utxo_from_entry).collect())
             .unwrap_or_default();
         let deltas = self
@@ -441,6 +465,7 @@ impl ChainReader for ZainoClient {
                 chain_info: false,
             })
             .await
+            .inspect_err(|e| log_degraded("getaddressdeltas", e))
             .map(|response| {
                 response
                     .deltas
@@ -464,7 +489,7 @@ impl ChainReader for ZainoClient {
             .0
             .z_validate_addr(address)
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("z_validateaddress", e))?;
         Ok(address_validity_from_response(response))
     }
 
@@ -473,21 +498,17 @@ impl ChainReader for ZainoClient {
             .0
             .z_list_receivers(address)
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("z_listunifiedreceivers", e))?;
         Ok(unified_receivers_from_response(response))
     }
 
     async fn node_status(&self) -> Result<NodeStatus, ChainReadError> {
-        let info = self
-            .0
-            .info()
-            .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        let info = self.0.info().await.map_err(|e| rpc_err("getinfo", e))?;
         let mempool = self
             .0
             .mempool_info()
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getmempoolinfo", e))?;
         Ok(NodeStatus {
             subversion: info.subversion,
             build: info.build,
@@ -501,9 +522,24 @@ impl ChainReader for ZainoClient {
         // Three independent RPCs, not every deployed zainod serves all
         // three — each degrades to absent on its own failure rather than
         // one missing method hiding the two that did answer.
-        let mining = self.0.mining_info().await.ok();
-        let network = self.0.network_info().await.ok();
-        let peers = self.0.peer_info().await.unwrap_or_default();
+        let mining = self
+            .0
+            .mining_info()
+            .await
+            .inspect_err(|e| log_degraded("getmininginfo", e))
+            .ok();
+        let network = self
+            .0
+            .network_info()
+            .await
+            .inspect_err(|e| log_degraded("getnetworkinfo", e))
+            .ok();
+        let peers = self
+            .0
+            .peer_info()
+            .await
+            .inspect_err(|e| log_degraded("getpeerinfo", e))
+            .unwrap_or_default();
         Ok(node_diagnostics_from_responses(mining, network, peers))
     }
 
@@ -512,7 +548,7 @@ impl ChainReader for ZainoClient {
             .0
             .blockchain_info()
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getblockchaininfo", e))?;
         Ok(BlockchainInfo {
             chain: response.chain,
             blocks: response.blocks,
@@ -526,10 +562,7 @@ impl ChainReader for ZainoClient {
     }
 
     async fn ping(&self) -> Result<(), ChainReadError> {
-        self.0
-            .ping()
-            .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))
+        self.0.ping().await.map_err(|e| rpc_err("ping", e))
     }
 
     async fn subtree_roots(
@@ -541,7 +574,7 @@ impl ChainReader for ZainoClient {
             .0
             .z_subtrees_by_index(pool, start_index, None)
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("z_getsubtreesbyindex", e))?;
         Ok(SubtreeRoots {
             pool: response.pool,
             start_index: response.start_index,
@@ -561,7 +594,7 @@ impl ChainReader for ZainoClient {
             .0
             .raw_mempool(Some(true))
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .map_err(|e| rpc_err("getrawmempool", e))?;
         raw_mempool_from_response(response)
     }
 }

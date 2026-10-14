@@ -11,6 +11,8 @@ description = "Dogfood block explorer: TUI surface, generic over the domain's Ch
 
 [dependencies]
 beazt-domain = { path = "../beazt-domain" }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 beazt-zaino-client = { path = "../beazt-zaino-client" }
 beazt-price-client = { path = "../beazt-price-client" }
 jsonrpsee = { workspace = true, features = ["http-client"] }

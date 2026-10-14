@@ -71,6 +71,17 @@ into a live CoinGecko-backed ZEC/USD price next to every amount — unset by
 default, so the RPC URL stays the only network dependency unless you ask
 for the second one.
 
+## Logging
+
+Every RPC failure logs a `warn` event in `beazt-zaino-client` — the one
+place every `ChainReadError` actually originates — regardless of which
+surface triggered it or whether that surface degrades the failure to an
+empty/default rather than showing an error. `RUST_LOG` (default `info`)
+controls verbosity on both binaries. `beazt-web` logs to stdout; `beazt-tui`
+logs to `BEAZT_LOG_DIR`/`beazt-tui.log` (`BEAZT_LOG_DIR` defaults to `.`)
+rather than stdout/stderr, since those are the terminal's own canvas while
+the TUI's alternate screen is active.
+
 ## Testing
 
 `cargo test --workspace`. Every capability has at least a mock-jsonrpsee-
